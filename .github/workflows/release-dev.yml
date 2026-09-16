@@ -17,7 +17,8 @@ jobs:
 
       - name: Build HACS zip
         run: |
-          zip -r stroompeil-ha-addon.zip . \
+          cd custom_components
+          zip -r ../stroompeil-ha-addon.zip . \
             -x '.git' -x '.git/*' -x '.github' -x '.github/*' -x '.gitignore'
 
       - name: Publish dev release
