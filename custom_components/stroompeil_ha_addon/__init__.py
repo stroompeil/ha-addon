@@ -26,7 +26,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     server_url = entry.data[CONF_SERVER_URL]
     token = entry.data[CONF_TOKEN]
-    client = StroompeilHAAddonWSClient(hass, server_url, token)
+    client = StroompeilHAAddonWSClient(hass, server_url, token, entry=entry)
     task = hass.async_create_background_task(client.run(), "stroompeil_ha_addon_ws")
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"client": client, "task": task}
     return True

@@ -30,11 +30,13 @@ class StroompeilHAAddonWSClient:
         hass,
         server_url: str,
         token: str,
+        entry=None,
         status_interval: int = DEFAULT_STATUS_INTERVAL_SECONDS,
     ) -> None:
         self._hass = hass
         self._server_url = server_url.rstrip("/")
         self._token = token
+        self._entry = entry
         self._status_interval = status_interval
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -108,7 +110,19 @@ class StroompeilHAAddonWSClient:
         except json.JSONDecodeError:
             _LOGGER.warning("Stroompeil HA addon: invalid json frame")
             return
-        if frame.get("msg_type") != "command":
+        msg_type = frame.get("msg_type")
+        if msg_type == "enrolled":
+            new_token = frame.get("token", "")
+            if new_token and self._entry is not None:
+                from .const import CONF_TOKEN
+
+                new_data = dict(self._entry.data)
+                new_data[CONF_TOKEN] = new_token
+                self._hass.config_entries.async_update_entry(self._entry, data=new_data)
+                self._token = new_token
+                _LOGGER.info("enrolled successfully, permanent token stored")
+            return
+        if msg_type != "command":
             return
         command_id = frame.get("command_id", "")
         type_ = frame.get("type", "")

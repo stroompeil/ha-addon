@@ -14,6 +14,7 @@ async def collect_status(hass) -> dict[str, Any]:
     info = await system_info.async_get_system_info(hass)
     return {
         "msg_type": "status",
+        "host_name": hass.config.location_name or "",
         "ha_version": hass.config.version,
         "uptime_seconds": _uptime_seconds(hass),
         "entity_count": len(hass.states.async_entity_ids()),

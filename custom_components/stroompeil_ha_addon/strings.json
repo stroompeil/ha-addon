@@ -10,10 +10,10 @@
       },
       "token": {
         "title": "Stroompeil",
-        "description": "Enter the agent token you received when provisioning this host in the Stroompeil dashboard.",
+        "description": "Enter the provisioning code shown in the Stroompeil dashboard.",
         "data": {
           "server_url": "Server URL",
-          "token": "Agent token"
+          "token": "Provisioning code"
         }
       }
     },
