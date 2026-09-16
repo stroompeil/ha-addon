@@ -8,7 +8,7 @@ only outbound internet.
 
 ## Requirements
 
-- Home Assistant 2024.1 or newer
+- Home Assistant 2026.1 or newer
 - [HACS](https://hacs.xyz) installed
 - A running Stroompeil HA server and an agent token issued by its operator
 
