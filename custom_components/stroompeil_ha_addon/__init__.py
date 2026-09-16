@@ -24,6 +24,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    from .ws_client import _delete_unregistered_issue
+
+    _delete_unregistered_issue(hass, entry.entry_id)
+
     server_url = entry.data[CONF_SERVER_URL]
     token = entry.data[CONF_TOKEN]
     client = StroompeilHAAddonWSClient(hass, server_url, token, entry=entry)

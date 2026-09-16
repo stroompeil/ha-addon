@@ -19,9 +19,36 @@ from .const import (
     DEFAULT_BACKOFF_INITIAL_SECONDS,
     DEFAULT_BACKOFF_MAX_SECONDS,
     DEFAULT_STATUS_INTERVAL_SECONDS,
+    DOMAIN,
 )
 
+_WS_CLOSE_UNREGISTERED = 4401
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def _create_unregistered_issue(hass, entry_id: str) -> None:
+    from homeassistant.helpers.issue_registry import (
+        IssueSeverity,
+        async_create_issue,
+    )
+
+    async_create_issue(
+        hass=hass,
+        domain=DOMAIN,
+        issue_id=f"unregistered_{entry_id}",
+        is_fixable=True,
+        issue_domain=DOMAIN,
+        severity=IssueSeverity.WARNING,
+        translation_key="unregistered",
+        translation_placeholders={"entry_id": entry_id},
+    )
+
+
+def _delete_unregistered_issue(hass, entry_id: str) -> None:
+    from homeassistant.helpers.issue_registry import async_delete_issue
+
+    async_delete_issue(hass, DOMAIN, f"unregistered_{entry_id}")
 
 
 class StroompeilHAAddonWSClient:
@@ -75,6 +102,7 @@ class StroompeilHAAddonWSClient:
     async def _run_once(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
+        close_code = None
         try:
             async with self._session.ws_connect(self._agent_url(), heartbeat=30) as ws:
                 self._ws = ws
@@ -89,8 +117,13 @@ class StroompeilHAAddonWSClient:
                         pass
                 if not receiver.done():
                     receiver.cancel()
+                close_code = ws.close_code
         finally:
             self._ws = None
+        if close_code == _WS_CLOSE_UNREGISTERED and self._entry is not None:
+            _LOGGER.warning("server rejected token (unregistered), stopping reconnection")
+            _create_unregistered_issue(self._hass, self._entry.entry_id)
+            self._stop.set()
 
     async def _send_status(self) -> None:
         if self._ws is None or self._ws.closed:

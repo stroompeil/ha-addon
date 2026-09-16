@@ -68,3 +68,23 @@ class StroompeilHAAddonConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=_token_schema(server_url),
             errors=errors,
         )
+
+    async def async_step_reconfigure(self, user_input: dict | None = None):
+        if user_input is not None:
+            self.hass.config_entries.async_update_entry(
+                self._get_reconfigure_entry(),
+                data={
+                    **self._get_reconfigure_entry().data,
+                    CONF_SERVER_URL: user_input[CONF_SERVER_URL],
+                    CONF_TOKEN: user_input[CONF_TOKEN],
+                },
+            )
+            await self.hass.config_entries.async_reload(self._get_reconfigure_entry().entry_id)
+            return self.async_abort(reason="reconfigured")
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_token_schema(""),
+        )
+
+    def _get_reconfigure_entry(self):
+        return self.hass.config_entries.async_get_entry(self.context["entry_id"])

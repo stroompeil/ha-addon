@@ -15,11 +15,26 @@
           "server_url": "Server URL",
           "token": "Provisioning code"
         }
+      },
+      "reconfigure": {
+        "title": "Re-register host",
+        "description": "This host was removed from the Stroompeil server. Enter a new provisioning code from the Stroompeil dashboard to re-register.",
+        "data": {
+          "server_url": "Server URL",
+          "token": "Provisioning code"
+        }
       }
     },
     "error": {},
     "abort": {
-      "already_configured": "This host token is already configured."
+      "already_configured": "This host token is already configured.",
+      "reconfigured": "Host re-registered successfully."
+    }
+  },
+  "issues": {
+    "unregistered": {
+      "title": "Host removed from Stroompeil",
+      "description": "The Stroompeil server no longer recognizes this host. It may have been deleted from the dashboard. Click Fix to re-register with a new provisioning code."
     }
   }
 }
