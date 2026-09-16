@@ -1,0 +1,11 @@
+{
+  "domain": "stroompeil_ha_addon",
+  "name": "Stroompeil HA addon",
+  "codeowners": ["@stroompeil"],
+  "config_flow": true,
+  "documentation": "https://github.com/stroompeil/ha-addon",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "version": "0.1.0"
+}
