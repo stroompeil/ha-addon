@@ -19,7 +19,7 @@ def _env_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_ENVIRONMENT, default=ENVIRONMENT_TEST): vol.In(
-                {ENVIRONMENT_TEST: "Test (fleet-dev.stroompeil.nl)"}
+                {ENVIRONMENT_TEST: "Development (fleet-dev.stroompeil.nl)"}
             )
         }
     )

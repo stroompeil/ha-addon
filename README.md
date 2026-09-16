@@ -24,7 +24,7 @@ only outbound internet.
 
 1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **Stroompeil** and select it.
-3. Select the **Environment** (only Test is available for now).
+3. Select the **Environment** (only Development is available for now).
 4. Enter the **Agent token** you received when provisioning this host in the
    Stroompeil dashboard. The server URL is pre-filled based on the selected
    environment.
