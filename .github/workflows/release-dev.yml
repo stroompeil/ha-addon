@@ -25,14 +25,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Remove previous dev releases so the list stays clean.
+          # Keep only the 5 most recent releases; delete older ones.
           gh release list --json tagName \
             -q '.[].tagName' \
+            | sort -rV \
+            | tail -n +6 \
             | while read -r tag; do
                 gh release delete "$tag" --cleanup-tag -y || true
               done
           # Create a new release with a unique, incrementing tag so HACS
           # detects it as a new version and offers an update.
           gh release create "0.1.${{ github.run_number }}" stroompeil-ha-addon.zip \
+            --target dev \
             --title "Dev build ${{ github.run_number }}" \
             --notes "Auto-generated dev build from ${GITHUB_SHA::7}."
