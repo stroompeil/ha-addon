@@ -17,8 +17,7 @@ jobs:
 
       - name: Build HACS zip
         run: |
-          cd custom_components/stroompeil_ha_addon
-          zip -r ../../../stroompeil-ha-addon.zip .
+          (cd custom_components/stroompeil_ha_addon && zip -r "$GITHUB_WORKSPACE/stroompeil-ha-addon.zip" . -x '*.pyc' -x '*__pycache__*')
 
       - name: Publish dev release
         env:
