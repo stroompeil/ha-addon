@@ -1,0 +1,29 @@
+name: Dev prerelease
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build HACS zip
+        run: |
+          zip -r stroompeil-ha-addon.zip . \
+            -x '.git' -x '.git/*' -x '.github' -x '.github/*' -x '.gitignore'
+
+      - name: Publish rolling dev prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete dev --cleanup-tag -y || true
+          gh release create dev stroompeil-ha-addon.zip \
+            --title "Dev build" \
+            --notes "Auto-generated dev build from ${GITHUB_SHA::7}. Install via HACS with 'Show beta versions' enabled for this repository." \
+            --prerelease
