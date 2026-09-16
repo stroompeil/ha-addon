@@ -68,6 +68,14 @@ class StroompeilHAAddonWSClient:
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._stop = asyncio.Event()
+        self._sensor = None
+
+    def set_sensor(self, sensor) -> None:
+        self._sensor = sensor
+
+    def _set_connected(self, connected: bool) -> None:
+        if self._sensor is not None:
+            self._sensor.set_connected(connected)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -106,6 +114,7 @@ class StroompeilHAAddonWSClient:
         try:
             async with self._session.ws_connect(self._agent_url(), heartbeat=30) as ws:
                 self._ws = ws
+                self._set_connected(True)
                 _LOGGER.info("connected to Stroompeil HA server")
                 receiver = asyncio.create_task(self._receive_loop(ws))
                 await asyncio.sleep(1)
@@ -120,6 +129,7 @@ class StroompeilHAAddonWSClient:
                 close_code = ws.close_code
         finally:
             self._ws = None
+            self._set_connected(False)
         if close_code == _WS_CLOSE_UNREGISTERED and self._entry is not None:
             _LOGGER.warning("server rejected token (unregistered), stopping reconnection")
             _create_unregistered_issue(self._hass, self._entry.entry_id)
