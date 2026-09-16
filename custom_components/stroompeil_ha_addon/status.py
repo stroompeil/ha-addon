@@ -15,7 +15,7 @@ async def collect_status(hass) -> dict[str, Any]:
     return {
         "msg_type": "status",
         "host_name": hass.config.location_name or "",
-        "ha_version": hass.config.version,
+        "ha_version": _ha_version(hass),
         "uptime_seconds": _uptime_seconds(hass),
         "entity_count": len(hass.states.async_entity_ids()),
         "cpu_load": _cpu_load(),
@@ -23,6 +23,14 @@ async def collect_status(hass) -> dict[str, Any]:
         "available_updates": list(info.get("updates", [])) if isinstance(info, dict) else [],
         "extra": {},
     }
+
+
+def _ha_version(hass) -> str:
+    version = getattr(hass.config, "version", None)
+    if version is not None:
+        return str(version)
+    from homeassistant.const import __version__
+    return __version__
 
 
 def _uptime_seconds(hass) -> int:

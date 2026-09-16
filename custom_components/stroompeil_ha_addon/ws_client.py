@@ -80,6 +80,7 @@ class StroompeilHAAddonWSClient:
                 self._ws = ws
                 _LOGGER.info("connected to Stroompeil HA server")
                 receiver = asyncio.create_task(self._receive_loop(ws))
+                await asyncio.sleep(1)
                 while not self._stop.is_set() and not ws.closed:
                     await self._send_status()
                     try:
@@ -94,7 +95,11 @@ class StroompeilHAAddonWSClient:
     async def _send_status(self) -> None:
         if self._ws is None or self._ws.closed:
             return
-        payload = await status_mod.collect_status(self._hass)
+        try:
+            payload = await status_mod.collect_status(self._hass)
+        except Exception as exc:
+            _LOGGER.warning("Stroompeil HA addon: failed to collect status: %s", exc)
+            return
         await self._ws.send_str(json.dumps(payload))
 
     async def _receive_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
