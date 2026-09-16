@@ -18,12 +18,19 @@ jobs:
           zip -r stroompeil-ha-addon.zip . \
             -x '.git' -x '.git/*' -x '.github' -x '.github/*' -x '.gitignore'
 
-      - name: Publish rolling dev prerelease
+      - name: Publish dev prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete dev --cleanup-tag -y || true
-          gh release create dev stroompeil-ha-addon.zip \
-            --title "Dev build" \
+          # Remove previous dev prereleases so the list stays clean.
+          gh release list --json tagName,isPrerelease \
+            -q '.[] | select(.isPrerelease) | .tagName' \
+            | while read -r tag; do
+                gh release delete "$tag" --cleanup-tag -y || true
+              done
+          # Create a new prerelease with a unique, incrementing tag so HACS
+          # detects it as a new version and offers an update.
+          gh release create "0.1.0-dev.${{ github.run_number }}" stroompeil-ha-addon.zip \
+            --title "Dev build ${{ github.run_number }}" \
             --notes "Auto-generated dev build from ${GITHUB_SHA::7}. Install via HACS with 'Show beta versions' enabled for this repository." \
             --prerelease
