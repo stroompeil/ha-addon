@@ -1,6 +1,5 @@
 {
   "name": "Stroompeil HA addon",
   "render_readme": true,
-  "content_in_root": false,
-  "zip_release": true
+  "content_in_root": false
 }
