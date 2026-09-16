@@ -4,6 +4,7 @@
   "codeowners": ["@stroompeil"],
   "config_flow": true,
   "documentation": "https://github.com/stroompeil/ha-addon",
+  "issue_tracker": "https://github.com/stroompeil/ha-addon/issues",
   "homeassistant": "2026.1.0",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
