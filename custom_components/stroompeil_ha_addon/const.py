@@ -2,10 +2,18 @@
 
 DOMAIN = "stroompeil_ha_addon"
 
+CONF_ENVIRONMENT = "environment"
 CONF_SERVER_URL = "server_url"
 CONF_TOKEN = "token"
 CONF_HOST_NAME = "host_name"
-CONF_LOCATION = "location"
+
+ENVIRONMENT_TEST = "test"
+ENVIRONMENT_PRODUCTION = "production"
+
+ENVIRONMENT_URLS = {
+    ENVIRONMENT_TEST: "wss://fleet-dev.stroompeil.nl",
+    ENVIRONMENT_PRODUCTION: "",
+}
 
 DEFAULT_STATUS_INTERVAL_SECONDS = 60
 DEFAULT_BACKOFF_INITIAL_SECONDS = 2

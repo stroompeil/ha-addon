@@ -1,6 +1,6 @@
 {
   "domain": "stroompeil_ha_addon",
-  "name": "Stroompeil HA addon",
+  "name": "Stroompeil",
   "codeowners": ["@stroompeil"],
   "config_flow": true,
   "documentation": "https://github.com/stroompeil/ha-addon",

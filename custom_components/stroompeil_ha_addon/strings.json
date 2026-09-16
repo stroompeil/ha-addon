@@ -2,13 +2,18 @@
   "config": {
     "step": {
       "user": {
-        "title": "Stroompeil HA addon",
-        "description": "Connect this Home Assistant to your self-hosted Stroompeil HA server. You get the token by provisioning this host in the Stroompeil HA server dashboard.",
+        "title": "Stroompeil",
+        "description": "Select the server environment to connect to.",
         "data": {
-          "server_url": "Stroompeil HA server URL (e.g. wss://server.example.com)",
-          "token": "Agent token",
-          "host_name": "Display name (optional)",
-          "location": "Location (optional)"
+          "environment": "Environment"
+        }
+      },
+      "token": {
+        "title": "Stroompeil",
+        "description": "Enter the agent token you received when provisioning this host in the Stroompeil dashboard.",
+        "data": {
+          "server_url": "Server URL",
+          "token": "Agent token"
         }
       }
     },

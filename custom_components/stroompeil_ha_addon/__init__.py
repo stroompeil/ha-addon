@@ -11,7 +11,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_HOST_NAME, CONF_LOCATION, CONF_SERVER_URL, CONF_TOKEN, DOMAIN
+from .const import CONF_SERVER_URL, CONF_TOKEN, DOMAIN
 from .ws_client import StroompeilHAAddonWSClient
 
 _LOGGER = logging.getLogger(__name__)
