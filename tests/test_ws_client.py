@@ -190,46 +190,11 @@ def test_set_sensor_registers_callback_target():
     assert sensor.connected is True
 
 
-def test_set_last_status_update_sensor_registers_callback_target():
-    client = _make_client()
-
-    class FakeLastUpdateSensor:
-        value = None
-
-        def set_last_status_update(self, timestamp):
-            self.value = timestamp
-
-    sensor = FakeLastUpdateSensor()
-    client.set_last_status_update_sensor(sensor)
-
-    from datetime import datetime, timezone
-
-    ts = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-    client._set_last_status_update(ts)
-    assert sensor.value == ts
-
-
-def test_set_last_status_update_is_noop_without_sensor():
-    client = _make_client()  # no sensor registered
-
-    from datetime import datetime, timezone
-
-    client._set_last_status_update(datetime.now(timezone.utc))  # must not raise
-
-
 @pytest.mark.asyncio
-async def test_send_status_records_timestamp_after_successful_send(monkeypatch):
+async def test_send_status_sends_status_frame_on_success(monkeypatch):
     client = _make_client()
     ws = FakeWS()
     client._ws = ws
-
-    captured = {}
-
-    class FakeLastUpdateSensor:
-        def set_last_status_update(self, timestamp):
-            captured["value"] = timestamp
-
-    client.set_last_status_update_sensor(FakeLastUpdateSensor())
 
     async def fake_collect(hass):
         return {"msg_type": "status", "ha_version": "x"}
@@ -243,26 +208,13 @@ async def test_send_status_records_timestamp_after_successful_send(monkeypatch):
 
     assert len(ws.sent) == 1
     assert json.loads(ws.sent[0])["msg_type"] == "status"
-    assert "value" in captured
-    from datetime import timezone
-
-    assert captured["value"].tzinfo is not None
-    assert captured["value"].utcoffset().total_seconds() == 0
 
 
 @pytest.mark.asyncio
-async def test_send_status_does_not_record_timestamp_when_collect_fails(monkeypatch, caplog):
+async def test_send_status_sends_nothing_when_collect_fails(monkeypatch, caplog):
     client = _make_client()
     ws = FakeWS()
     client._ws = ws
-
-    recorded = []
-
-    class FakeLastUpdateSensor:
-        def set_last_status_update(self, timestamp):
-            recorded.append(timestamp)
-
-    client.set_last_status_update_sensor(FakeLastUpdateSensor())
 
     async def boom_collect(hass):
         raise RuntimeError("collect failed")
@@ -275,23 +227,21 @@ async def test_send_status_does_not_record_timestamp_when_collect_fails(monkeypa
     await client._send_status()
 
     assert ws.sent == []  # nothing sent
-    assert recorded == []  # no timestamp recorded on a failed collect
     assert "failed to collect status" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_send_status_does_not_record_when_websocket_closed(monkeypatch):
+async def test_send_status_is_noop_when_websocket_closed(monkeypatch):
     client = _make_client()
     client._ws = types.SimpleNamespace(closed=True)  # type: ignore[attr-defined]
 
-    recorded = []
+    async def fake_collect(hass):
+        return {"msg_type": "status"}
 
-    class FakeLastUpdateSensor:
-        def set_last_status_update(self, timestamp):
-            recorded.append(timestamp)
+    monkeypatch.setattr(
+        "custom_components.stroompeil_ha_addon.ws_client.status_mod.collect_status",
+        fake_collect,
+    )
 
-    client.set_last_status_update_sensor(FakeLastUpdateSensor())
+    await client._send_status()  # early-returns before any send
 
-    await client._send_status()
-
-    assert recorded == []  # early-returns before any send or recording
