@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -69,13 +70,21 @@ class StroompeilHAAddonWSClient:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._stop = asyncio.Event()
         self._sensor = None
+        self._last_status_update_sensor = None
 
     def set_sensor(self, sensor) -> None:
         self._sensor = sensor
 
+    def set_last_status_update_sensor(self, sensor) -> None:
+        self._last_status_update_sensor = sensor
+
     def _set_connected(self, connected: bool) -> None:
         if self._sensor is not None:
             self._sensor.set_connected(connected)
+
+    def _set_last_status_update(self, timestamp) -> None:
+        if self._last_status_update_sensor is not None:
+            self._last_status_update_sensor.set_last_status_update(timestamp)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -144,6 +153,7 @@ class StroompeilHAAddonWSClient:
             _LOGGER.warning("Stroompeil HA addon: failed to collect status: %s", exc)
             return
         await self._ws.send_str(json.dumps(payload))
+        self._set_last_status_update(datetime.now(timezone.utc))
 
     async def _receive_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         async for msg in ws:
