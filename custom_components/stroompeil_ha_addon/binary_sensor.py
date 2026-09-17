@@ -31,7 +31,7 @@ class StroompeilConnectionSensor(BinarySensorEntity):
 
     @property
     def name(self) -> str:
-        return "Connected"
+        return "Stroompeil Connected"
 
     async def async_added_to_hass(self) -> None:
         domain_data = self.hass.data.get(DOMAIN, {})

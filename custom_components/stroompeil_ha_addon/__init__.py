@@ -31,12 +31,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     server_url = entry.data[CONF_SERVER_URL]
     token = entry.data[CONF_TOKEN]
     client = StroompeilHAAddonWSClient(hass, server_url, token, entry=entry)
-    task = hass.async_create_background_task(client.run(), "stroompeil_ha_addon_ws")
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"client": client, "task": task}
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"client": client, "task": None}
     await hass.config_entries.async_forward_entry_setups(entry, ["binary_sensor"])
     entry_data = hass.data[DOMAIN][entry.entry_id]
     if "sensor" in entry_data:
         client.set_sensor(entry_data["sensor"])
+    task = hass.async_create_background_task(client.run(), "stroompeil_ha_addon_ws")
+    entry_data["task"] = task
     return True
 
 
