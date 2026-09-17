@@ -185,7 +185,9 @@ class StroompeilHAAddonWSClient:
         command_id = frame.get("command_id", "")
         type_ = frame.get("type", "")
         args = frame.get("args", {}) or {}
-        result = await dispatch_command(self._hass, command_id, type_, args)
+        result = await dispatch_command(
+            self._hass, command_id, type_, args, self._send_progress(command_id)
+        )
         await self._send_result(command_id, result)
 
     async def _send_result(self, command_id: str, result: dict[str, Any]) -> None:
@@ -197,3 +199,17 @@ class StroompeilHAAddonWSClient:
             "status": result.get("status", "error"),
             "detail": result.get("detail", ""),
         }))
+
+    def _send_progress(self, command_id: str):
+        async def _send(phase: str, percent: int | None, version_target: str, detail: str) -> None:
+            if self._ws is None or self._ws.closed:
+                return
+            await self._ws.send_str(json.dumps({
+                "msg_type": "progress",
+                "command_id": command_id,
+                "phase": phase,
+                "percent": percent,
+                "version_target": version_target,
+                "detail": detail,
+            }))
+        return _send

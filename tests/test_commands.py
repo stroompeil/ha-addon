@@ -12,20 +12,39 @@ import logging
 import pytest
 
 from custom_components.stroompeil_ha_addon import commands
-from custom_components.stroompeil_ha_addon.const import COMMAND_TYPE_RESTART
+from custom_components.stroompeil_ha_addon.const import COMMAND_TYPE_RESTART, COMMAND_TYPE_UPDATE, DOMAIN
 
 
 class FakeServices:
     def __init__(self):
         self.calls = []
 
-    async def async_call(self, domain, service):
-        self.calls.append((domain, service))
+    async def async_call(self, domain, service, data=None, blocking=False):
+        self.calls.append((domain, service, data))
+
+
+class FakeStates:
+    """Minimal states stand-in for update-entity lookups."""
+
+    def __init__(self, entities=None):
+        self._entities = entities or {}
+
+    def get(self, entity_id):
+        return self._entities.get(entity_id)
+
+    def async_entity_ids(self, domain):
+        return [eid for eid, st in self._entities.items()]
+
+
+class FakeState:
+    def __init__(self, attributes=None):
+        self.attributes = attributes or {}
 
 
 class FakeHass:
-    def __init__(self):
+    def __init__(self, states=None):
         self.services = FakeServices()
+        self.states = states or FakeStates()
         self._tasks = []
 
     def async_create_task(self, coro):
@@ -52,7 +71,7 @@ async def test_restart_dispatches_homeassistant_service():
     assert result == {"status": "dispatched", "detail": "restart queued"}
     # Let the scheduled service-call task actually execute so we can assert it.
     await asyncio.gather(*hass._tasks)
-    assert hass.services.calls == [("homeassistant", "restart")]
+    assert (hass.services.calls[0][0], hass.services.calls[0][1]) == ("homeassistant", "restart")
 
 
 @pytest.mark.asyncio
@@ -80,7 +99,106 @@ async def test_handler_exception_is_caught_and_reported(caplog):
     assert "scheduler unavailable" in result["detail"]
 
 
-def test_only_restart_is_allowlisted():
+def test_known_commands_are_allowlisted():
     # Guard against accidentally widening the trust boundary.
-    assert set(commands.ALLOWED_COMMANDS) == {COMMAND_TYPE_RESTART}
+    assert set(commands.ALLOWED_COMMANDS) == {COMMAND_TYPE_RESTART, COMMAND_TYPE_UPDATE}
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_RESTART])
+    assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_UPDATE])
+
+
+class _UpdateEntity(FakeState):
+    pass
+
+
+class _InstallDoneServices(FakeServices):
+    """Service stand-in where update.install completes immediately (in_progress -> False)."""
+
+    async def async_call(self, domain, service, data=None, blocking=False):
+        await super().async_call(domain, service, data, blocking)
+        if domain == "update" and service == "install":
+            self._hass.states._entities[self._entity_id] = FakeState(
+                {"installed_version": self._new_version, "latest_version": self._new_version, "in_progress": False}
+            )
+
+
+def _make_update_hass(*, installed, latest, in_progress=False, new_version=None):
+    entity_id = f"update.{DOMAIN}_update"
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": installed,
+        "latest_version": latest,
+        "in_progress": in_progress,
+        "update_percentage": None,
+    })})
+    services = _InstallDoneServices()
+    hass = FakeHass(states=states)
+    hass.services = services
+    services._hass = hass
+    services._entity_id = entity_id
+    services._new_version = new_version or latest
+    return hass, entity_id
+
+
+@pytest.mark.asyncio
+async def test_update_returns_error_without_hacs_entity():
+    hass = FakeHass(states=FakeStates({}))  # no update entities
+    result = await commands.dispatch_command(hass, "u1", COMMAND_TYPE_UPDATE, {})
+    assert result["status"] == "error"
+    assert "update entity" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_already_on_target_returns_ok():
+    hass, _ = _make_update_hass(installed="0.2.0", latest="0.2.0")
+    result = await commands.dispatch_command(hass, "u2", COMMAND_TYPE_UPDATE, {})
+    assert result["status"] == "ok"
+    assert "already on" in result["detail"]
+    assert hass.services.calls == []  # no install, no restart
+
+
+@pytest.mark.asyncio
+async def test_update_emits_progress_then_restarts(monkeypatch):
+    hass, _ = _make_update_hass(installed="0.2.0", latest="0.3.0", new_version="0.3.0")
+    # avoid the 1s sleep in the poll loop
+    import custom_components.stroompeil_ha_addon.commands as cmds
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(cmds.asyncio, "sleep", lambda *_: _real_sleep(0))
+
+    progress: list[tuple] = []
+
+    async def send_progress(phase, percent, version_target, detail):
+        progress.append((phase, percent, version_target, detail))
+
+    result = await commands.dispatch_command(hass, "u3", COMMAND_TYPE_UPDATE, {}, send_progress)
+
+    assert result["status"] == "dispatched"
+    phases = [p[0] for p in progress]
+    assert "checking" in phases
+    assert "installed" in phases
+    # install service was called against the entity
+    assert any(c[0] == "update" and c[1] == "install" for c in hass.services.calls)
+    # restart was queued
+    await asyncio.gather(*hass._tasks)
+    assert any(c[0] == "homeassistant" and c[1] == "restart" for c in hass.services.calls)
+    assert result["detail"] == "update to 0.3.0 installed, restart queued"
+
+
+@pytest.mark.asyncio
+async def test_update_install_failure_returns_error(monkeypatch):
+    class FailServices(FakeServices):
+        async def async_call(self, domain, service, data=None, blocking=False):
+            await super().async_call(domain, service, data, blocking)
+            if domain == "update":
+                raise RuntimeError("network down")
+
+    entity_id = f"update.{DOMAIN}_update"
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": "0.2.0", "latest_version": "0.3.0", "in_progress": False,
+    })})
+    hass = FakeHass(states=states)
+    hass.services = FailServices()
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+
+    result = await commands.dispatch_command(hass, "u4", COMMAND_TYPE_UPDATE, {})
+    assert result["status"] == "error"
+    assert "update.install failed" in result["detail"]
