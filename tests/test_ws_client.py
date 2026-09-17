@@ -106,7 +106,7 @@ async def test_handle_text_command_returns_result_frame(monkeypatch):
     client = _make_client()
     client._ws = FakeWS()
 
-    async def fake_dispatch(hass, command_id, type_, args):
+    async def fake_dispatch(hass, command_id, type_, args, send_progress=None):
         return {"status": "dispatched", "detail": "ok"}
 
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ async def test_handle_text_command_returns_result_frame(monkeypatch):
 async def test_handle_text_command_includes_command_id_from_frame(monkeypatch):
     captured: dict[str, Any] = {}
 
-    async def fake_dispatch(hass, command_id, type_, args):
+    async def fake_dispatch(hass, command_id, type_, args, send_progress=None):
         captured.update(command_id=command_id, type=type_, args=args)
         return {"status": "ok", "detail": ""}
 

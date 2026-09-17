@@ -5,13 +5,17 @@ MUST match the server's `StatusFrame`.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import homeassistant.helpers.system_info as system_info
 
+_LOGGER = logging.getLogger(__name__)
+
 
 async def collect_status(hass) -> dict[str, Any]:
     info = await system_info.async_get_system_info(hass)
+    running, installed = await _addon_versions(hass)
     return {
         "msg_type": "status",
         "host_name": hass.config.location_name or "",
@@ -21,8 +25,54 @@ async def collect_status(hass) -> dict[str, Any]:
         "cpu_load": _cpu_load(),
         "integrations": sorted(hass.data.get("custom_components", {}).keys()),
         "available_updates": list(info.get("updates", [])) if isinstance(info, dict) else [],
+        "addon_running_version": running,
+        "addon_installed_version": installed,
         "extra": {},
     }
+
+
+async def _addon_versions(hass) -> tuple[str, str]:
+    """Return (running, installed) versions of this add-on (ADR 0019).
+
+    `running` is the version HA loaded at boot, read from the loader's cached
+    Integration object. `installed` is what's on disk right now, read from the
+    manifest file. They differ when an update is staged but not yet restarted.
+    Both are best-effort and return "" on failure.
+    """
+    from .const import DOMAIN
+
+    running = await _running_version(hass, DOMAIN)
+    installed = _disk_version(hass, DOMAIN)
+    return running, installed
+
+
+async def _running_version(hass, domain: str) -> str:
+    try:
+        from homeassistant.loader import async_get_custom_components
+
+        comps = await async_get_custom_components(hass)
+        integration = comps.get(domain)
+        if integration is not None and integration.version is not None:
+            return str(integration.version)
+    except Exception as exc:  # noqa: BLE001 - never raise out of status collection
+        _LOGGER.debug("running version lookup failed for %s: %s", domain, exc)
+    return ""
+
+
+def _disk_version(hass, domain: str) -> str:
+    import json as _json
+    import os
+
+    config_dir = getattr(getattr(hass, "config", None), "config_dir", None)
+    if not config_dir:
+        return ""
+    manifest_path = os.path.join(config_dir, "custom_components", domain, "manifest.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as fh:
+            return str(_json.load(fh).get("version", ""))
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("disk version read failed for %s: %s", domain, exc)
+    return ""
 
 
 def _ha_version(hass) -> str:

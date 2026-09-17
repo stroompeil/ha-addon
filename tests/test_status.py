@@ -48,6 +48,8 @@ async def test_collect_status_shape():
     assert payload["integrations"] == ["stroompeil_ha_addon"]  # sorted
     assert payload["available_updates"] == []
     assert payload["extra"] == {}
+    assert payload["addon_running_version"] == ""
+    assert payload["addon_installed_version"] == ""
     assert isinstance(payload["uptime_seconds"], int)
 
 
@@ -99,3 +101,50 @@ def test_uptime_seconds_positive_when_started_in_past():
 
 def test_cpu_load_is_a_float():
     assert isinstance(status._cpu_load(), float)
+
+
+@pytest.mark.asyncio
+async def test_addon_versions_from_disk_manifest(tmp_path, monkeypatch):
+    import custom_components.stroompeil_ha_addon.status as status_mod
+    from custom_components.stroompeil_ha_addon.const import DOMAIN
+
+    comp_dir = tmp_path / "custom_components" / DOMAIN
+    comp_dir.mkdir(parents=True)
+    (comp_dir / "manifest.json").write_text('{"version": "0.4.0"}')
+
+    class Config:
+        config_dir = str(tmp_path)
+
+    class Hass:
+        config = Config()
+
+    running, installed = await status_mod._addon_versions(Hass())
+    # running stays "" because homeassistant.loader is not installed in tests
+    assert running == ""
+    assert installed == "0.4.0"
+
+
+@pytest.mark.asyncio
+async def test_addon_versions_running_from_loader(monkeypatch):
+    import custom_components.stroompeil_ha_addon.status as status_mod
+    from custom_components.stroompeil_ha_addon.const import DOMAIN
+
+    class Integration:
+        version = "0.3.0"
+
+    class LoaderMod:
+        @staticmethod
+        async def async_get_custom_components(hass):
+            return {DOMAIN: Integration()}
+
+    import sys
+    loader = type(sys)("homeassistant.loader")
+    loader.async_get_custom_components = LoaderMod.async_get_custom_components
+    monkeypatch.setitem(sys.modules, "homeassistant.loader", loader)
+
+    class Hass:
+        pass
+
+    running, installed = await status_mod._addon_versions(Hass())
+    assert running == "0.3.0"
+    assert installed == ""  # no config_dir on Hass
