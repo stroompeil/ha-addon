@@ -3,13 +3,34 @@ name: Dev prerelease
 on:
   push:
     branches: [dev]
+  pull_request:
+    branches: [dev]
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || 'dev' }}
+
+      - name: Build HACS zip
+        run: |
+          (cd custom_components/stroompeil_ha_addon && zip -r "$GITHUB_WORKSPACE/stroompeil-ha-addon.zip" . -x '*.pyc' -x '*__pycache__*')
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: stroompeil-ha-addon
+          path: stroompeil-ha-addon.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v5
         with:
