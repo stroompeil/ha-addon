@@ -131,31 +131,5 @@ def _install_ha_stubs() -> None:
     binary_sensor.BinarySensorDeviceClass = BinarySensorDeviceClass  # type: ignore[attr-defined]
     binary_sensor.BinarySensorEntity = BinarySensorEntity  # type: ignore[attr-defined]
 
-    sensor = _install_module("homeassistant.components.sensor")
-
-    class SensorDeviceClass(Enum):
-        TIMESTAMP = "timestamp"
-
-    class SensorEntity:
-        _attr_device_class = None
-        _attr_has_entity_name = False
-        _attr_native_value = None
-        _attr_unique_id = None
-
-        def __init__(self, *args, **kwargs):
-            self.hass = None
-
-        async def async_added_to_hass(self):
-            return None
-
-        def async_write_ha_state(self):
-            return None
-
-    sensor.SensorDeviceClass = SensorDeviceClass  # type: ignore[attr-defined]
-    sensor.SensorEntity = SensorEntity  # type: ignore[attr-defined]
-
-    typing_mod = _install_module("homeassistant.helpers.typing")
-    typing_mod.StateType = object  # type: ignore[attr-defined]
-
 
 _install_ha_stubs()
