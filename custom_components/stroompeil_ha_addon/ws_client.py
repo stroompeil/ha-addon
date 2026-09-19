@@ -183,12 +183,15 @@ class StroompeilHAAddonWSClient:
     async def _send_result(self, command_id: str, result: dict[str, Any]) -> None:
         if self._ws is None or self._ws.closed:
             return
-        await self._ws.send_str(json.dumps({
+        frame = {
             "msg_type": "result",
             "command_id": command_id,
             "status": result.get("status", "error"),
             "detail": result.get("detail", ""),
-        }))
+        }
+        if result.get("data") is not None:
+            frame["data"] = result["data"]
+        await self._ws.send_str(json.dumps(frame))
 
     def _send_progress(self, command_id: str):
         async def _send(phase: str, percent: int | None, version_target: str, detail: str) -> None:

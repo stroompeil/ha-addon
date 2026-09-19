@@ -10,6 +10,8 @@ from typing import Any
 
 import homeassistant.helpers.system_info as system_info
 
+from .logs import collect_critical_logs
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -27,6 +29,7 @@ async def collect_status(hass) -> dict[str, Any]:
         "available_updates": list(info.get("updates", [])) if isinstance(info, dict) else [],
         "addon_running_version": running,
         "addon_installed_version": installed,
+        "critical_logs": collect_critical_logs(hass),
         "extra": {},
     }
 

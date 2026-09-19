@@ -148,3 +148,33 @@ async def test_addon_versions_running_from_loader(monkeypatch):
     running, installed = await status_mod._addon_versions(Hass())
     assert running == "0.3.0"
     assert installed == ""  # no config_dir on Hass
+
+
+@pytest.mark.asyncio
+async def test_collect_status_carries_critical_logs():
+    import datetime
+
+    class FakeLogEntry:
+        def __init__(self):
+            ts = datetime.datetime(2026, 9, 18, 12, 0, tzinfo=datetime.timezone.utc)
+            self.level = "ERROR"
+            self.name = "zigbee2mqtt"
+            self.message = "Adapter disconnected"
+            self.timestamp = ts
+            self.first_occurrence = ts
+            self.count = 4
+
+    hass = FakeHass()
+    hass.data = {
+        "custom_components": {"stroompeil_ha_addon": object()},
+        "system_log": {"items": [FakeLogEntry()]},
+    }
+    payload = await status.collect_status(hass)
+    assert payload["critical_logs"][0]["logger"] == "zigbee2mqtt"
+    assert payload["critical_logs"][0]["count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_collect_status_critical_logs_empty_without_buffer():
+    payload = await status.collect_status(FakeHass())
+    assert payload["critical_logs"] == []

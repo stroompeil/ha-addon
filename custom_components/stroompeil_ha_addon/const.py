@@ -21,3 +21,4 @@ DEFAULT_BACKOFF_MAX_SECONDS = 300
 
 COMMAND_TYPE_RESTART = "homeassistant.restart"
 COMMAND_TYPE_UPDATE = "integration.update"
+COMMAND_TYPE_LOGS = "diagnostics.logs"
