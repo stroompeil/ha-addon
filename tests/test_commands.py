@@ -12,7 +12,12 @@ import logging
 import pytest
 
 from custom_components.stroompeil_ha_addon import commands
-from custom_components.stroompeil_ha_addon.const import COMMAND_TYPE_RESTART, COMMAND_TYPE_UPDATE, DOMAIN
+from custom_components.stroompeil_ha_addon.const import (
+    COMMAND_TYPE_LOGS,
+    COMMAND_TYPE_RESTART,
+    COMMAND_TYPE_UPDATE,
+    DOMAIN,
+)
 
 
 class FakeServices:
@@ -101,9 +106,14 @@ async def test_handler_exception_is_caught_and_reported(caplog):
 
 def test_known_commands_are_allowlisted():
     # Guard against accidentally widening the trust boundary.
-    assert set(commands.ALLOWED_COMMANDS) == {COMMAND_TYPE_RESTART, COMMAND_TYPE_UPDATE}
+    assert set(commands.ALLOWED_COMMANDS) == {
+        COMMAND_TYPE_RESTART,
+        COMMAND_TYPE_UPDATE,
+        COMMAND_TYPE_LOGS,
+    }
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_RESTART])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_UPDATE])
+    assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_LOGS])
 
 
 class _UpdateEntity(FakeState):
@@ -202,3 +212,72 @@ async def test_update_install_failure_returns_error(monkeypatch):
     result = await commands.dispatch_command(hass, "u4", COMMAND_TYPE_UPDATE, {})
     assert result["status"] == "error"
     assert "update.install failed" in result["detail"]
+
+
+class FakeLogEntry:
+    def __init__(self, *, level, name, message, timestamp=None, first_occurrence=None, count=1):
+        self.level = level
+        self.name = name
+        self.message = message
+        self.timestamp = timestamp
+        self.first_occurrence = first_occurrence
+        self.count = count
+
+
+class FakeLogHass(FakeHass):
+    def __init__(self, entries=None):
+        super().__init__()
+        self.data = {"system_log": {"items": entries or []}}
+
+
+@pytest.mark.asyncio
+async def test_logs_command_returns_entries_in_data():
+    entry = FakeLogEntry(
+        level="ERROR",
+        name="zigbee2mqtt",
+        message="Adapter disconnected",
+        count=3,
+    )
+    result = await commands.dispatch_command(
+        FakeLogHass(entries=[entry]), "cmd-logs-1", COMMAND_TYPE_LOGS, {}
+    )
+    assert result["status"] == "ok"
+    assert result["data"]["entries"][0]["logger"] == "zigbee2mqtt"
+    assert result["data"]["entries"][0]["count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_logs_command_clamps_limit_and_filters_level():
+    entries = [
+        FakeLogEntry(level="WARNING", name="w", message="m"),
+        FakeLogEntry(level="ERROR", name="e", message="m"),
+    ]
+    result = await commands.dispatch_command(
+        FakeLogHass(entries=entries), "cmd-logs-2", COMMAND_TYPE_LOGS,
+        {"min_level": "WARNING", "limit": 999},
+    )
+    assert result["status"] == "ok"
+    assert len(result["data"]["entries"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_logs_command_default_filters_warning_out():
+    entries = [
+        FakeLogEntry(level="WARNING", name="w", message="m"),
+    ]
+    result = await commands.dispatch_command(
+        FakeLogHass(entries=entries), "cmd-logs-3", COMMAND_TYPE_LOGS, {}
+    )
+    assert result["status"] == "ok"
+    assert result["data"]["entries"] == []
+
+
+@pytest.mark.asyncio
+async def test_logs_command_handles_broken_limit_arg():
+    entry = FakeLogEntry(level="ERROR", name="e", message="m")
+    result = await commands.dispatch_command(
+        FakeLogHass(entries=[entry]), "cmd-logs-4", COMMAND_TYPE_LOGS,
+        {"limit": "not-a-number"},
+    )
+    assert result["status"] == "ok"
+    assert len(result["data"]["entries"]) == 1

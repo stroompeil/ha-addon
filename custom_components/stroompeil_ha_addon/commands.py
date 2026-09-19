@@ -15,7 +15,8 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
-from .const import COMMAND_TYPE_RESTART, COMMAND_TYPE_UPDATE, DOMAIN
+from .const import COMMAND_TYPE_RESTART, COMMAND_TYPE_LOGS, COMMAND_TYPE_UPDATE, DOMAIN
+from .logs import DEFAULT_LIMIT, DEFAULT_MIN_LEVEL, collect_critical_logs
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -107,9 +108,26 @@ def _find_update_entity(hass, domain: str) -> str:
     return ""
 
 
+async def _handle_logs(hass, args: dict[str, Any], send_progress: SendProgress | None) -> dict[str, Any]:
+    """Read recent log entries from HA's system_log ring buffer (read-only)."""
+    min_level = str(args.get("min_level") or DEFAULT_MIN_LEVEL)
+    try:
+        limit = int(args.get("limit") or DEFAULT_LIMIT)
+    except (TypeError, ValueError):
+        limit = DEFAULT_LIMIT
+    limit = max(1, min(limit, 50))
+    entries = collect_critical_logs(hass, min_level=min_level, limit=limit)
+    return {
+        "status": "ok",
+        "detail": f"{len(entries)} log entries at {min_level} or higher",
+        "data": {"entries": entries},
+    }
+
+
 ALLOWED_COMMANDS: dict[str, CommandHandler] = {
     COMMAND_TYPE_RESTART: _handle_restart,
     COMMAND_TYPE_UPDATE: _handle_update,
+    COMMAND_TYPE_LOGS: _handle_logs,
 }
 
 
