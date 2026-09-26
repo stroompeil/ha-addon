@@ -117,13 +117,17 @@ class StroompeilHAAddonWSClient:
                 self._set_connected(True)
                 _LOGGER.info("connected to Stroompeil HA server")
                 receiver = asyncio.create_task(self._receive_loop(ws))
-                await asyncio.sleep(1)
-                while not self._stop.is_set() and not ws.closed:
-                    await self._send_status()
-                    try:
-                        await asyncio.wait_for(self._stop.wait(), timeout=self._status_interval)
-                    except asyncio.TimeoutError:
-                        pass
+                try:
+                    await asyncio.sleep(1)
+                    while not self._stop.is_set() and not ws.closed:
+                        await self._send_status()
+                        try:
+                            await asyncio.wait_for(self._stop.wait(), timeout=self._status_interval)
+                        except asyncio.TimeoutError:
+                            pass
+                except asyncio.CancelledError:
+                    await self._send_restarting_if_restart()
+                    raise
                 if not receiver.done():
                     receiver.cancel()
                 close_code = ws.close_code
@@ -134,6 +138,31 @@ class StroompeilHAAddonWSClient:
             _LOGGER.warning("server rejected token (unregistered), stopping reconnection")
             _create_unregistered_issue(self._hass, self._entry.entry_id)
             self._stop.set()
+
+    async def _send_restarting_if_restart(self) -> None:
+        """Best-effort "restarting" notification, sent as HA begins a restart.
+
+        HA cancels background tasks before setting its exit code and firing
+        `homeassistant_stop`; by the time the cancellation reaches this
+        coroutine, `hass.exit_code` is final. `RESTART_EXIT_CODE` means HA is
+        actually executing a restart (not a plain stop or an entry unload); the
+        socket is still open here, so this is the last moment we can tell the
+        server what is happening.
+        """
+        try:
+            from homeassistant.const import RESTART_EXIT_CODE
+        except ImportError:
+            return
+        if getattr(self._hass, "exit_code", 0) != RESTART_EXIT_CODE:
+            return
+        ws = self._ws
+        if ws is None or ws.closed:
+            return
+        try:
+            await ws.send_str(json.dumps({"msg_type": "restarting"}))
+            _LOGGER.info("Home Assistant is restarting; notified the server")
+        except Exception:
+            _LOGGER.debug("failed to send restarting frame", exc_info=True)
 
     async def _send_status(self) -> None:
         if self._ws is None or self._ws.closed:

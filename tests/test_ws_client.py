@@ -6,6 +6,7 @@ agent-URL construction, inbound frame routing, and the enrolled-token rotation.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import types
 from typing import Any
@@ -245,3 +246,80 @@ async def test_send_status_is_noop_when_websocket_closed(monkeypatch):
 
     await client._send_status()  # early-returns before any send
 
+
+
+@pytest.mark.asyncio
+async def test_send_restarting_sends_frame_when_exit_code_is_restart():
+    client = _make_client()
+    client._ws = FakeWS()
+    client._hass.exit_code = 100
+    await client._send_restarting_if_restart()
+    assert len(client._ws.sent) == 1
+    assert json.loads(client._ws.sent[0]) == {"msg_type": "restarting"}
+
+
+@pytest.mark.asyncio
+async def test_send_restarting_noop_on_plain_stop():
+    client = _make_client()
+    client._ws = FakeWS()
+    client._hass.exit_code = 0
+    await client._send_restarting_if_restart()
+    assert client._ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_send_restarting_noop_when_socket_closed():
+    client = _make_client()
+    client._ws = types.SimpleNamespace(closed=True, sent=[])  # type: ignore[attr-defined]
+    client._hass.exit_code = 100
+    await client._send_restarting_if_restart()  # no send, no raise
+
+
+@pytest.mark.asyncio
+async def test_send_restarting_never_raises(monkeypatch):
+    client = _make_client()
+    ws = FakeWS()
+
+    async def boom(data):
+        raise RuntimeError("socket dying")
+
+    ws.send_str = boom
+    client._ws = ws
+    client._hass.exit_code = 100
+    await client._send_restarting_if_restart()  # swallow + log at debug
+
+
+@pytest.mark.asyncio
+async def test_run_once_sends_restarting_when_cancelled_during_restart(monkeypatch):
+    client = _make_client()
+    client._hass.exit_code = 100
+    sent: list[str] = []
+
+    class FakeSession:
+        closed = False
+
+        def ws_connect(self, *args, **kwargs):
+            return _FakeWsContext()
+
+    class _FakeWsContext:
+        async def __aenter__(self):
+            self.ws = FakeWS()
+            self.ws.sent = sent
+            client._ws = self.ws
+            return self.ws
+
+        async def __aexit__(self, *exc):
+            client._ws = None
+            return False
+
+    client._session = FakeSession()
+
+    async def fake_sleep(delay, result=None):
+        raise asyncio.CancelledError
+
+    import custom_components.stroompeil_ha_addon.ws_client as wsmod
+    monkeypatch.setattr(wsmod.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await client._run_once()
+    assert json.loads(sent[0]) == {"msg_type": "restarting"}
