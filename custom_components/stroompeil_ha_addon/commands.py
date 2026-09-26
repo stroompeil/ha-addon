@@ -20,6 +20,7 @@ from .const import (
     COMMAND_TYPE_LOGS,
     COMMAND_TYPE_UPDATE,
     COMMAND_TYPE_CORE_UPDATE,
+    COMMAND_TYPE_UPDATES_ALL,
     DOMAIN,
 )
 from .logs import DEFAULT_LIMIT, DEFAULT_MIN_LEVEL, collect_critical_logs
@@ -210,11 +211,65 @@ async def _handle_core_update(hass, args: dict[str, Any], send_progress: SendPro
     return {"status": "dispatched", "detail": f"core update to {target or 'latest'} installed, restart queued"}
 
 
+async def _handle_updates_all(hass, args: dict[str, Any], send_progress: SendProgress | None) -> dict[str, Any]:
+    """Sequentially install every pending update entity except HA core (ADR 0035).
+
+    Fault-tolerant batch: one failing install is recorded and the batch moves
+    on. The core update entity is skipped deliberately — core updates gate
+    behind their own confirmation and restart (ADR 0028); a batch never
+    restarts Home Assistant.
+    """
+    send = send_progress or _send_progress_noop
+    skipped_core = find_core_update_entity(hass)
+    targets: list[str] = []
+    try:
+        for entity_id in hass.states.async_entity_ids("update"):
+            if entity_id == skipped_core:
+                continue
+            state = hass.states.get(entity_id)
+            if state is None or state.state != "on":
+                continue
+            targets.append(entity_id)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("updates.all enumeration failed: %s", exc)
+        return {"status": "error", "detail": f"could not enumerate update entities: {exc}"}
+    if not targets:
+        return {"status": "ok", "detail": "no pending add-on or integration updates"}
+    installed: list[str] = []
+    failed: list[dict[str, str]] = []
+    for i, entity_id in enumerate(targets):
+        state = hass.states.get(entity_id)
+        name = (state.attributes.get("friendly_title") if state else None) or entity_id
+        await send("installing", int(i * 100 / len(targets)), "", f"updating {name}")
+        try:
+            await hass.services.async_call("update", "install", {"entity_id": entity_id}, blocking=True)
+        except Exception as exc:  # noqa: BLE001 - one failure must not stop the batch
+            _LOGGER.warning("updates.all: install failed for %s: %s", entity_id, exc)
+            failed.append({"entity_id": entity_id, "error": str(exc)})
+            continue
+        for _ in range(600):
+            await asyncio.sleep(1)
+            state = hass.states.get(entity_id)
+            if state is None or not bool(state.attributes.get("in_progress")):
+                break
+        installed.append(entity_id)
+    summary = f"{len(installed)} updated, {len(failed)} failed"
+    data: dict[str, Any] = {"installed": installed}
+    if failed:
+        data["failed"] = failed
+    if skipped_core:
+        data["skipped_core"] = skipped_core
+    await send("installed", 100, "", summary)
+    status = "ok" if not failed else "error"
+    return {"status": status, "detail": summary, "data": data}
+
+
 ALLOWED_COMMANDS: dict[str, CommandHandler] = {
     COMMAND_TYPE_RESTART: _handle_restart,
     COMMAND_TYPE_UPDATE: _handle_update,
     COMMAND_TYPE_CORE_UPDATE: _handle_core_update,
     COMMAND_TYPE_LOGS: _handle_logs,
+    COMMAND_TYPE_UPDATES_ALL: _handle_updates_all,
 }
 
 
