@@ -17,6 +17,7 @@ from custom_components.stroompeil_ha_addon.const import (
     COMMAND_TYPE_LOGS,
     COMMAND_TYPE_RESTART,
     COMMAND_TYPE_UPDATE,
+    COMMAND_TYPE_UPDATES_ALL,
     DOMAIN,
 )
 
@@ -112,11 +113,13 @@ def test_known_commands_are_allowlisted():
         COMMAND_TYPE_UPDATE,
         COMMAND_TYPE_CORE_UPDATE,
         COMMAND_TYPE_LOGS,
+        COMMAND_TYPE_UPDATES_ALL,
     }
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_RESTART])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_UPDATE])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_CORE_UPDATE])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_LOGS])
+    assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_UPDATES_ALL])
 
 
 class _UpdateEntity(FakeState):
@@ -387,3 +390,93 @@ async def test_logs_command_handles_broken_limit_arg():
     )
     assert result["status"] == "ok"
     assert len(result["data"]["entries"]) == 1
+
+
+class FakeUpdateStates:
+    """States stand-in that knows per-entity state strings."""
+
+    def __init__(self, entities):
+        self._entities = entities
+
+    def async_entity_ids(self, domain=None):
+        return list(self._entities) if domain == "update" else []
+
+    def get(self, entity_id):
+        return self._entities.get(entity_id)
+
+
+class UpdateFakeState:
+    def __init__(self, state, attributes=None):
+        self.state = state
+        self.attributes = attributes or {}
+
+
+@pytest.mark.asyncio
+async def test_updates_all_installs_pending_sequentially_and_skips_core(monkeypatch):
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+
+    entities = {
+        "update.home_assistant_core_update": UpdateFakeState("on"),
+        "update.some_addon_update": UpdateFakeState("on", {"friendly_title": "Some add-on"}),
+        "update.hacs_repo_update": UpdateFakeState("on", {"friendly_title": "HACS repo"}),
+        "update.up_to_date_thing": UpdateFakeState("off"),
+    }
+    hass = FakeHass(states=FakeUpdateStates(entities))
+    progress = []
+
+    async def send_progress(phase, percent, version_target, detail):
+        progress.append((phase, percent, detail))
+
+    result = await commands.dispatch_command(hass, "cmd-u1", COMMAND_TYPE_UPDATES_ALL, {}, send_progress)
+
+    assert result["status"] == "ok"
+    installed = result["data"]["installed"]
+    assert "update.home_assistant_core_update" not in installed
+    assert "update.some_addon_update" in installed
+    assert "update.hacs_repo_update" in installed
+    assert "update.up_to_date_thing" not in installed
+    assert result["data"]["skipped_core"] == "update.home_assistant_core_update"
+    called = [c[2]["entity_id"] for c in hass.services.calls]
+    assert called == ["update.some_addon_update", "update.hacs_repo_update"]
+    assert ("installed", 100, "2 updated, 0 failed") in progress
+
+
+@pytest.mark.asyncio
+async def test_updates_all_continues_after_failure(monkeypatch):
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+
+    class FlakyServices(FakeServices):
+        def __init__(self):
+            super().__init__()
+            self.calls_made = 0
+
+        async def async_call(self, domain, service, data=None, blocking=False):
+            self.calls_made += 1
+            if data and data.get("entity_id") == "update.broken_update":
+                raise RuntimeError("download failed")
+            self.calls.append((domain, service, data))
+
+    entities = {
+        "update.broken_update": UpdateFakeState("on"),
+        "update.healthy_update": UpdateFakeState("on"),
+    }
+    hass = FakeHass(states=FakeUpdateStates(entities))
+    hass.services = FlakyServices()
+
+    result = await commands.dispatch_command(hass, "cmd-u2", COMMAND_TYPE_UPDATES_ALL, {})
+
+    assert result["status"] == "error"
+    assert result["detail"] == "1 updated, 1 failed"
+    assert result["data"]["installed"] == ["update.healthy_update"]
+    assert result["data"]["failed"] == [
+        {"entity_id": "update.broken_update", "error": "download failed"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_updates_all_noop_without_pending_updates():
+    hass = FakeHass(states=FakeUpdateStates({}))
+    result = await commands.dispatch_command(hass, "cmd-u3", COMMAND_TYPE_UPDATES_ALL, {})
+    assert result == {"status": "ok", "detail": "no pending add-on or integration updates"}
