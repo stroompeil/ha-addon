@@ -208,3 +208,40 @@ async def test_collect_status_carries_critical_logs():
 async def test_collect_status_critical_logs_empty_without_buffer():
     payload = await status.collect_status(FakeHass())
     assert payload["critical_logs"] == []
+
+
+@pytest.mark.asyncio
+async def test_collect_status_reports_ram_and_disk_metrics(monkeypatch):
+    async def fake_system_info(hass):
+        return {
+            "updates": [],
+            "memory_percent": 43.56,
+            "memory_total": 8192.0,
+            "disk_percent": 71.24,
+        }
+
+    monkeypatch.setattr(status.system_info, "async_get_system_info", fake_system_info)
+    payload = await status.collect_status(FakeHass())
+    assert payload["ram_used_percent"] == 43.6
+    assert payload["ram_total_mb"] == 8192.0
+    assert payload["disk_used_percent"] == 71.2
+
+
+@pytest.mark.asyncio
+async def test_collect_status_ram_and_disk_zero_without_supervisor():
+    payload = await status.collect_status(FakeHass())
+    assert payload["ram_used_percent"] == 0.0
+    assert payload["ram_total_mb"] == 0.0
+    assert payload["disk_used_percent"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_collect_status_ram_and_disk_tolerate_bad_values(monkeypatch):
+    async def fake_system_info(hass):
+        return {"updates": [], "memory_percent": "lots", "memory_total": None}
+
+    monkeypatch.setattr(status.system_info, "async_get_system_info", fake_system_info)
+    payload = await status.collect_status(FakeHass())
+    assert payload["ram_used_percent"] == 0.0
+    assert payload["ram_total_mb"] == 0.0
+    assert payload["disk_used_percent"] == 0.0
