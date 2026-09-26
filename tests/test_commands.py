@@ -13,6 +13,7 @@ import pytest
 
 from custom_components.stroompeil_ha_addon import commands
 from custom_components.stroompeil_ha_addon.const import (
+    COMMAND_TYPE_CORE_UPDATE,
     COMMAND_TYPE_LOGS,
     COMMAND_TYPE_RESTART,
     COMMAND_TYPE_UPDATE,
@@ -109,10 +110,12 @@ def test_known_commands_are_allowlisted():
     assert set(commands.ALLOWED_COMMANDS) == {
         COMMAND_TYPE_RESTART,
         COMMAND_TYPE_UPDATE,
+        COMMAND_TYPE_CORE_UPDATE,
         COMMAND_TYPE_LOGS,
     }
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_RESTART])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_UPDATE])
+    assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_CORE_UPDATE])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_LOGS])
 
 
@@ -210,6 +213,109 @@ async def test_update_install_failure_returns_error(monkeypatch):
     monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
 
     result = await commands.dispatch_command(hass, "u4", COMMAND_TYPE_UPDATE, {})
+    assert result["status"] == "error"
+    assert "update.install failed" in result["detail"]
+
+
+CORE_ENTITY = "update.home_assistant_core_update"
+
+
+def _make_core_hass(*, installed, latest, in_progress=False, new_version=None, entity_id=CORE_ENTITY):
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": installed,
+        "latest_version": latest,
+        "in_progress": in_progress,
+        "update_percentage": None,
+    })})
+    services = _InstallDoneServices()
+    hass = FakeHass(states=states)
+    hass.services = services
+    services._hass = hass
+    services._entity_id = entity_id
+    services._new_version = new_version or latest
+    return hass
+
+
+@pytest.mark.asyncio
+async def test_core_update_returns_error_without_supervisor_entity():
+    hass = FakeHass(states=FakeStates({}))  # no update entities at all
+    result = await commands.dispatch_command(hass, "c1", COMMAND_TYPE_CORE_UPDATE, {})
+    assert result["status"] == "error"
+    assert "no HA-core update entity" in result["detail"]
+
+
+def test_core_update_entity_lookup_falls_back_to_substring():
+    renamed = "update.home_assistant_core_new"
+    states = FakeStates({renamed: FakeState({"latest_version": "2026.9.1"})})
+    assert commands.find_core_update_entity(FakeHass(states=states)) == renamed
+
+
+def test_core_update_entity_lookup_excludes_supervisor_entity():
+    supervisor = "update.home_assistant_supervisor_update"
+    states = FakeStates({supervisor: FakeState({"latest_version": "2026.9.1"})})
+    assert commands.find_core_update_entity(FakeHass(states=states)) == ""
+
+
+@pytest.mark.asyncio
+async def test_core_update_already_on_target_returns_ok():
+    hass = _make_core_hass(installed="2026.9.0", latest="2026.9.0")
+    result = await commands.dispatch_command(hass, "c2", COMMAND_TYPE_CORE_UPDATE, {})
+    assert result["status"] == "ok"
+    assert "already on" in result["detail"]
+    assert hass.services.calls == []  # no install, no restart
+
+
+@pytest.mark.asyncio
+async def test_core_update_emits_progress_then_restarts(monkeypatch):
+    hass = _make_core_hass(installed="2026.9.0", latest="2026.9.1", new_version="2026.9.1")
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+    progress: list[tuple] = []
+
+    async def send_progress(phase, percent, version_target, detail):
+        progress.append((phase, percent, version_target, detail))
+
+    result = await commands.dispatch_command(hass, "c3", COMMAND_TYPE_CORE_UPDATE, {}, send_progress)
+    assert result["status"] == "dispatched"
+    phases = [p[0] for p in progress]
+    assert "checking" in phases
+    assert "installed" in phases
+    assert any(p[2] == "2026.9.1" for p in progress)
+    assert any(c[0] == "update" and c[1] == "install" for c in hass.services.calls)
+    await asyncio.gather(*hass._tasks)
+    assert any(c[0] == "homeassistant" and c[1] == "restart" for c in hass.services.calls)
+    assert result["detail"] == "core update to 2026.9.1 installed, restart queued"
+
+
+@pytest.mark.asyncio
+async def test_core_update_pinned_version_is_passed_to_install(monkeypatch):
+    hass = _make_core_hass(installed="2026.9.0", latest="2026.9.1", new_version="2026.8.0")
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+
+    result = await commands.dispatch_command(hass, "c4", COMMAND_TYPE_CORE_UPDATE, {"version": "2026.8.0"})
+    assert result["status"] == "dispatched"
+    install_calls = [c for c in hass.services.calls if c[:2] == ("update", "install")]
+    assert install_calls[0][2]["version"] == "2026.8.0"
+
+
+@pytest.mark.asyncio
+async def test_core_update_install_failure_returns_error(monkeypatch):
+    class FailServices(FakeServices):
+        async def async_call(self, domain, service, data=None, blocking=False):
+            await super().async_call(domain, service, data, blocking)
+            if domain == "update":
+                raise RuntimeError("supervisor offline")
+
+    states = FakeStates({CORE_ENTITY: FakeState({
+        "installed_version": "2026.9.0", "latest_version": "2026.9.1", "in_progress": False,
+    })})
+    hass = FakeHass(states=states)
+    hass.services = FailServices()
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+
+    result = await commands.dispatch_command(hass, "c5", COMMAND_TYPE_CORE_UPDATE, {})
     assert result["status"] == "error"
     assert "update.install failed" in result["detail"]
 

@@ -15,7 +15,13 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
-from .const import COMMAND_TYPE_RESTART, COMMAND_TYPE_LOGS, COMMAND_TYPE_UPDATE, DOMAIN
+from .const import (
+    COMMAND_TYPE_RESTART,
+    COMMAND_TYPE_LOGS,
+    COMMAND_TYPE_UPDATE,
+    COMMAND_TYPE_CORE_UPDATE,
+    DOMAIN,
+)
 from .logs import DEFAULT_LIMIT, DEFAULT_MIN_LEVEL, collect_critical_logs
 
 _LOGGER = logging.getLogger(__name__)
@@ -92,6 +98,30 @@ async def _handle_update(hass, args: dict[str, Any], send_progress: SendProgress
     return {"status": "dispatched", "detail": f"update to {target or 'latest'} installed, restart queued"}
 
 
+CORE_UPDATE_ENTITY_ID = "update.home_assistant_core_update"
+CORE_UPDATE_ENTITY_MATCH = "home_assistant_core"
+
+
+def find_core_update_entity(hass) -> str:
+    """Locate the Supervisor update entity for HA core (ADR 0028).
+
+    The canonical id is `update.home_assistant_core_update`; fall back to a
+    substring match in case of a renamed install. The entity is disabled by
+    default, so absence is a normal state (non-Supervised installs have none
+    at all). Returns "" if not found.
+    """
+    try:
+        state = hass.states.get(CORE_UPDATE_ENTITY_ID)
+        if state is not None:
+            return CORE_UPDATE_ENTITY_ID
+        for entity_id in hass.states.async_entity_ids("update"):
+            if CORE_UPDATE_ENTITY_MATCH in entity_id and "supervisor" not in entity_id:
+                return entity_id
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("core update entity lookup failed: %s", exc)
+    return ""
+
+
 def _find_update_entity(hass, domain: str) -> str:
     """Locate the HACS update entity for this integration's domain.
 
@@ -124,9 +154,66 @@ async def _handle_logs(hass, args: dict[str, Any], send_progress: SendProgress |
     }
 
 
+async def _handle_core_update(hass, args: dict[str, Any], send_progress: SendProgress | None) -> dict[str, Any]:
+    """Update HA core via the Supervisor update entity, then restart (ADR 0028).
+
+    Mirrors `_handle_update`: reports progress while the Supervisor install runs,
+    then queues a restart to load the new core. The restart kills our own socket,
+    so the server reconciles from the status frame after reconnect. Core downloads
+    are multi-minute, hence the longer poll window.
+    """
+    send = send_progress or _send_progress_noop
+    version = args.get("version") or ""
+
+    entity_id = find_core_update_entity(hass)
+    if not entity_id:
+        return {"status": "error", "detail": "no HA-core update entity (Supervisor required, or entity disabled)"}
+
+    state = hass.states.get(entity_id)
+    if state is None:
+        return {"status": "error", "detail": "core update entity unavailable"}
+    installed = state.attributes.get("installed_version")
+    latest = state.attributes.get("latest_version")
+
+    target = version or latest
+    if target and installed == target:
+        return {"status": "ok", "detail": f"already on {installed}"}
+
+    await send("checking", None, target or "", "checking for core update")
+    try:
+        await hass.services.async_call(
+            "update", "install", {"entity_id": entity_id, **({"version": version} if version else {})},
+            blocking=True,
+        )
+    except Exception as exc:
+        _LOGGER.exception("core update.install failed for %s", entity_id)
+        return {"status": "error", "detail": f"update.install failed: {exc}"}
+
+    last_percent: int | None = None
+    for _ in range(1800):
+        await asyncio.sleep(1)
+        state = hass.states.get(entity_id)
+        if state is None:
+            break
+        in_progress = bool(state.attributes.get("in_progress"))
+        percent = state.attributes.get("update_percentage")
+        if percent is None and in_progress:
+            percent = last_percent
+        if percent != last_percent or in_progress:
+            await send("installing", percent, target or "", "downloading" if in_progress else "installing")
+            last_percent = percent
+        if not in_progress:
+            break
+
+    await send("installed", None, target or "", "core install complete, restarting to load new version")
+    hass.async_create_task(hass.services.async_call("homeassistant", "restart"))
+    return {"status": "dispatched", "detail": f"core update to {target or 'latest'} installed, restart queued"}
+
+
 ALLOWED_COMMANDS: dict[str, CommandHandler] = {
     COMMAND_TYPE_RESTART: _handle_restart,
     COMMAND_TYPE_UPDATE: _handle_update,
+    COMMAND_TYPE_CORE_UPDATE: _handle_core_update,
     COMMAND_TYPE_LOGS: _handle_logs,
 }
 

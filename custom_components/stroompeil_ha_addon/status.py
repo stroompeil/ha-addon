@@ -27,11 +27,33 @@ async def collect_status(hass) -> dict[str, Any]:
         "cpu_load": _cpu_load(),
         "integrations": sorted(hass.data.get("custom_components", {}).keys()),
         "available_updates": list(info.get("updates", [])) if isinstance(info, dict) else [],
+        "ha_latest_version": _ha_latest_version(hass),
         "addon_running_version": running,
         "addon_installed_version": installed,
         "critical_logs": collect_critical_logs(hass),
         "extra": {},
     }
+
+
+def _ha_latest_version(hass) -> str:
+    """Latest HA-core version from the Supervisor update entity (ADR 0028).
+
+    Best-effort: "" when the entity is absent or disabled (non-Supervised
+    installs) or the attribute is missing. Never raises.
+    """
+    from .commands import find_core_update_entity
+
+    try:
+        entity_id = find_core_update_entity(hass)
+        if not entity_id:
+            return ""
+        state = hass.states.get(entity_id)
+        if state is None:
+            return ""
+        return str(state.attributes.get("latest_version") or "")
+    except Exception as exc:  # noqa: BLE001 - never raise out of status collection
+        _LOGGER.debug("ha latest version lookup failed: %s", exc)
+        return ""
 
 
 async def _addon_versions(hass) -> tuple[str, str]:
