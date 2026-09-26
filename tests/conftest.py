@@ -33,6 +33,7 @@ def _install_ha_stubs() -> None:
     ha = _install_package("homeassistant")
 
     const = _install_module("homeassistant.const")
+    const.RESTART_EXIT_CODE = 100
     const.__version__ = "2026.1.0"
 
     core = _install_module("homeassistant.core")
