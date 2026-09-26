@@ -29,6 +29,9 @@ async def collect_status(hass) -> dict[str, Any]:
         "ram_total_mb": _metric(info, "memory_total"),
         "disk_used_percent": _metric(info, "disk_percent"),
         "integrations": sorted(hass.data.get("custom_components", {}).keys()),
+        "addons": _addons(hass),
+        "automation_count": _domain_count(hass, "automation"),
+        "dashboard_count": _dashboard_count(hass),
         "available_updates": list(info.get("updates", [])) if isinstance(info, dict) else [],
         "ha_latest_version": _ha_latest_version(hass),
         "addon_running_version": running,
@@ -143,3 +146,58 @@ def _metric(info: Any, key: str) -> float:
         return round(float(value), 1) if value is not None else 0.0
     except (TypeError, ValueError):
         return 0.0
+
+
+def _addons(hass) -> list[dict[str, Any]]:
+    """Installed Supervisor add-ons from the hassio integration's cached
+    supervisor info (ADR 0033).
+
+    `get_supervisor_info` reads an in-process cache maintained by the hassio
+    integration — no per-add-on Supervisor round-trip. Absent on non-Supervised
+    installs; the import lives inside the function so those hosts report [].
+    """
+    try:
+        from homeassistant.components.hassio import get_supervisor_info
+
+        info = get_supervisor_info(hass)
+        addons = info.get("addons") if isinstance(info, dict) else None
+        if not isinstance(addons, list):
+            return []
+        return [
+            {
+                "slug": str(a.get("slug") or ""),
+                "name": str(a.get("name") or a.get("slug") or ""),
+                "version": str(a.get("version") or ""),
+                "state": str(a.get("state") or ""),
+                "update_available": bool(a.get("update_available")),
+            }
+            for a in addons
+            if isinstance(a, dict)
+        ]
+    except Exception as exc:  # noqa: BLE001 - never raise out of status collection
+        _LOGGER.debug("addon inventory unavailable: %s", exc)
+        return []
+
+
+def _domain_count(hass, domain: str) -> int:
+    try:
+        return len(hass.states.async_entity_ids(domain))
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("%s count unavailable: %s", domain, exc)
+        return 0
+
+
+def _dashboard_count(hass) -> int:
+    """Lovelace dashboards from the lovelace integration's view set (ADR 0033).
+
+    Best-effort: 0 when the lovelace data is absent or shaped unexpectedly
+    (e.g. older/newer HA internals); the count is display context, not a
+    health signal.
+    """
+    try:
+        view_set = hass.data.get("lovelace")
+        dashboards = getattr(view_set, "dashboards", None)
+        return len(dashboards) if isinstance(dashboards, dict) else 0
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("dashboard count unavailable: %s", exc)
+        return 0
