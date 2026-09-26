@@ -20,19 +20,30 @@ class FakeConfig:
 
 
 class FakeStates:
-    def __init__(self, ids):
+    def __init__(self, ids, entities=None):
         self._ids = ids
+        self._entities = entities or {}
 
-    def async_entity_ids(self):
-        return self._ids
+    def async_entity_ids(self, domain=None):
+        if domain is None:
+            return self._ids
+        return [eid for eid in self._entities]
+
+    def get(self, entity_id):
+        return self._entities.get(entity_id)
+
+
+class FakeState:
+    def __init__(self, attributes=None):
+        self.attributes = attributes or {}
 
 
 class FakeHass:
     def __init__(self, *, location_name="Living Room", version="2026.1.0",
                  entity_ids=("light.kitchen", "sensor.temp"), custom_components=None,
-                 started_at=None):
+                 started_at=None, update_entities=None):
         self.config = FakeConfig(location_name=location_name, version=version)
-        self.states = FakeStates(entity_ids)
+        self.states = FakeStates(entity_ids, update_entities or {})
         self.data = {"custom_components": custom_components or {"stroompeil_ha_addon": object()}}
         self.started_at = started_at
 
@@ -47,10 +58,29 @@ async def test_collect_status_shape():
     assert payload["entity_count"] == 2
     assert payload["integrations"] == ["stroompeil_ha_addon"]  # sorted
     assert payload["available_updates"] == []
+    assert payload["ha_latest_version"] == ""
     assert payload["extra"] == {}
     assert payload["addon_running_version"] == ""
     assert payload["addon_installed_version"] == ""
     assert isinstance(payload["uptime_seconds"], int)
+
+
+@pytest.mark.asyncio
+async def test_collect_status_reports_ha_latest_version_from_core_entity():
+    hass = FakeHass(update_entities={
+        "update.home_assistant_core_update": FakeState({"latest_version": "2026.9.1"}),
+    })
+    payload = await status.collect_status(hass)
+    assert payload["ha_latest_version"] == "2026.9.1"
+
+
+@pytest.mark.asyncio
+async def test_collect_status_ha_latest_version_empty_without_core_entity():
+    hass = FakeHass(update_entities={
+        "update.some_hacs_repo_update": FakeState({"latest_version": "1.0.0"}),
+    })
+    payload = await status.collect_status(hass)
+    assert payload["ha_latest_version"] == ""
 
 
 @pytest.mark.asyncio
