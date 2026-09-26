@@ -72,9 +72,19 @@ jobs:
             | while read -r tag; do
                 gh release delete "$tag" --cleanup-tag -y || true
               done
+          # Derive the next build number from the highest existing 0.1.x tag
+          # so it keeps incrementing across branch switches or run-counter
+          # resets (e.g. dev ended at build 40; main continues at 41).
+          last="$(gh release list --json tagName -q '.[].tagName' \
+            | grep -E '^0\.1\.[0-9]+$' | sort -V | tail -1 || true)"
+          n="${last#0.1.}"
+          if [ -z "$n" ] || ! [[ "$n" =~ ^[0-9]+$ ]]; then
+            n=0
+          fi
+          build="$((n + 1))"
           # Create a new release with a unique, incrementing tag so HACS
           # detects it as a new version and offers an update.
-          gh release create "0.1.${{ github.run_number }}" stroompeil-ha-addon.zip \
-            --target dev \
-            --title "Dev build ${{ github.run_number }}" \
+          gh release create "0.1.${build}" stroompeil-ha-addon.zip \
+            --target main \
+            --title "Dev build ${build}" \
             --notes "Auto-generated build from ${GITHUB_SHA::7}."
