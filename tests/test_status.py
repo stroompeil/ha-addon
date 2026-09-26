@@ -245,3 +245,72 @@ async def test_collect_status_ram_and_disk_tolerate_bad_values(monkeypatch):
     assert payload["ram_used_percent"] == 0.0
     assert payload["ram_total_mb"] == 0.0
     assert payload["disk_used_percent"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_collect_status_reports_addon_inventory(monkeypatch):
+    supervisor = {
+        "addons": [
+            {
+                "slug": "mosquitto",
+                "name": "Mosquitto broker",
+                "version": "6.4.1",
+                "state": "started",
+                "update_available": True,
+            },
+            {"slug": "file_editor", "name": "", "version": "1.9", "state": "stopped"},
+            "not-a-dict",
+        ]
+    }
+
+    import sys
+    import types
+
+    hassio = types.ModuleType("homeassistant.components.hassio")
+    hassio.get_supervisor_info = lambda hass: supervisor
+    monkeypatch.setitem(sys.modules, "homeassistant.components.hassio", hassio)
+
+    payload = await status.collect_status(FakeHass())
+    assert payload["addons"] == [
+        {
+            "slug": "mosquitto",
+            "name": "Mosquitto broker",
+            "version": "6.4.1",
+            "state": "started",
+            "update_available": True,
+        },
+        {
+            "slug": "file_editor",
+            "name": "file_editor",
+            "version": "1.9",
+            "state": "stopped",
+            "update_available": False,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_collect_status_addons_empty_without_supervisor():
+    payload = await status.collect_status(FakeHass())
+    assert payload["addons"] == []
+
+
+@pytest.mark.asyncio
+async def test_collect_status_reports_automation_and_dashboard_counts():
+    hass = FakeHass(
+        entity_ids=("automation.a", "automation.b"),
+        update_entities={"automation.a": FakeState(), "automation.b": FakeState()},
+    )
+    hass.data["lovelace"] = type(
+        "FakeLovelace", (), {"dashboards": {"lovelace": object(), "extra": object()}}
+    )()
+    payload = await status.collect_status(hass)
+    assert payload["automation_count"] == 2
+    assert payload["dashboard_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_collect_status_automation_and_dashboard_counts_default_zero():
+    payload = await status.collect_status(FakeHass())
+    assert payload["automation_count"] == 0
+    assert payload["dashboard_count"] == 0
