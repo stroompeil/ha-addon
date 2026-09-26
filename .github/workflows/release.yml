@@ -1,0 +1,80 @@
+name: Dev prerelease
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || 'main' }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_test.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || 'main' }}
+
+      - name: Build HACS zip
+        run: |
+          (cd custom_components/stroompeil_ha_addon && zip -r "$GITHUB_WORKSPACE/stroompeil-ha-addon.zip" . -x '*.pyc' -x '*__pycache__*')
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: stroompeil-ha-addon
+          path: stroompeil-ha-addon.zip
+
+  release:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Build HACS zip
+        run: |
+          (cd custom_components/stroompeil_ha_addon && zip -r "$GITHUB_WORKSPACE/stroompeil-ha-addon.zip" . -x '*.pyc' -x '*__pycache__*')
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Keep only the 5 most recent releases; delete older ones.
+          gh release list --json tagName \
+            -q '.[].tagName' \
+            | sort -rV \
+            | tail -n +6 \
+            | while read -r tag; do
+                gh release delete "$tag" --cleanup-tag -y || true
+              done
+          # Create a new release with a unique, incrementing tag so HACS
+          # detects it as a new version and offers an update.
+          gh release create "0.1.${{ github.run_number }}" stroompeil-ha-addon.zip \
+            --target dev \
+            --title "Dev build ${{ github.run_number }}" \
+            --notes "Auto-generated build from ${GITHUB_SHA::7}."
