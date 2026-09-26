@@ -25,6 +25,9 @@ async def collect_status(hass) -> dict[str, Any]:
         "uptime_seconds": _uptime_seconds(hass),
         "entity_count": len(hass.states.async_entity_ids()),
         "cpu_load": _cpu_load(),
+        "ram_used_percent": _metric(info, "memory_percent"),
+        "ram_total_mb": _metric(info, "memory_total"),
+        "disk_used_percent": _metric(info, "disk_percent"),
         "integrations": sorted(hass.data.get("custom_components", {}).keys()),
         "available_updates": list(info.get("updates", [])) if isinstance(info, dict) else [],
         "ha_latest_version": _ha_latest_version(hass),
@@ -125,4 +128,18 @@ def _cpu_load() -> float:
 
         return round(os.getloadavg()[0], 2) if hasattr(os, "getloadavg") else 0.0
     except Exception:
+        return 0.0
+
+
+def _metric(info: Any, key: str) -> float:
+    """Read a numeric host metric from Supervisor system info (ADR 0032).
+
+    `async_get_system_info` returns the Supervisor's system-info payload on
+    HA OS / Supervised installs and a minimal dict otherwise. Missing or
+    non-numeric values report 0.0; collection never raises.
+    """
+    try:
+        value = info.get(key) if isinstance(info, dict) else None
+        return round(float(value), 1) if value is not None else 0.0
+    except (TypeError, ValueError):
         return 0.0
