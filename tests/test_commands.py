@@ -221,6 +221,7 @@ async def test_update_install_failure_returns_error(monkeypatch):
 
 
 CORE_ENTITY = "update.home_assistant_core_update"
+_REAL_SLEEP = asyncio.sleep
 
 
 def _make_core_hass(*, installed, latest, in_progress=False, new_version=None, entity_id=CORE_ENTITY):
@@ -480,3 +481,100 @@ async def test_updates_all_noop_without_pending_updates():
     hass = FakeHass(states=FakeUpdateStates({}))
     result = await commands.dispatch_command(hass, "cmd-u3", COMMAND_TYPE_UPDATES_ALL, {})
     assert result == {"status": "ok", "detail": "no pending add-on or integration updates"}
+
+
+class _SlowInstallServices(FakeServices):
+    """Service stand-in where update.install stays in progress and reports
+    rising percentages while it runs (ADR 0038 narration path)."""
+
+    def __init__(self, hass, entity_id, steps=(10, 55, 90)):
+        super().__init__()
+        self._hass = hass
+        self._entity_id = entity_id
+        self._steps = list(steps)
+
+    async def async_call(self, domain, service, data=None, blocking=False):
+        await super().async_call(domain, service, data, blocking)
+        if domain != "update" or service != "install":
+            return
+        states = self._hass.states
+        for pct in self._steps:
+            states._entities[self._entity_id] = FakeState({
+                "installed_version": "2026.9.0",
+                "latest_version": "2026.9.1",
+                "in_progress": True,
+                "update_percentage": pct,
+            })
+            await _REAL_SLEEP(0.005)
+        states._entities[self._entity_id] = FakeState({
+            "installed_version": "2026.9.1",
+            "latest_version": "2026.9.1",
+            "in_progress": False,
+            "update_percentage": None,
+        })
+
+
+@pytest.mark.asyncio
+async def test_core_update_narrates_live_percent_during_install(monkeypatch):
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0.001))
+    entity_id = CORE_ENTITY
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": "2026.9.0", "latest_version": "2026.9.1",
+        "in_progress": False, "update_percentage": None,
+    })})
+    hass = FakeHass(states=states)
+    hass.services = _SlowInstallServices(hass, entity_id)
+    progress: list[tuple] = []
+
+    async def send_progress(phase, percent, version_target, detail):
+        progress.append((phase, percent, version_target, detail))
+
+    result = await commands.dispatch_command(
+        hass, "c-live", COMMAND_TYPE_CORE_UPDATE, {}, send_progress
+    )
+    assert result["status"] == "dispatched"
+    installing = [p for p in progress if p[0] == "installing"]
+    percents = [p[1] for p in installing if p[1] is not None]
+    distinct: list[int] = []
+    for pct in percents:
+        if not distinct or distinct[-1] != pct:
+            distinct.append(pct)
+    assert distinct == [10, 55, 90]
+    assert all(p[2] == "2026.9.1" for p in installing)
+    assert progress[-1][0] == "installed"
+    await asyncio.gather(*hass._tasks)
+    assert any(c[0] == "homeassistant" and c[1] == "restart" for c in hass.services.calls)
+
+
+@pytest.mark.asyncio
+async def test_core_update_install_failure_during_narration_returns_error(monkeypatch):
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0.001))
+
+    class FailingSlowServices(_SlowInstallServices):
+        async def async_call(self, domain, service, data=None, blocking=False):
+            await super().async_call(domain, service, data, blocking)
+            if domain == "update" and service == "install":
+                raise RuntimeError("download interrupted")
+
+    entity_id = CORE_ENTITY
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": "2026.9.0", "latest_version": "2026.9.1",
+        "in_progress": False,
+    })})
+    hass = FakeHass(states=states)
+    hass.services = FailingSlowServices(hass, entity_id)
+    result = await commands.dispatch_command(hass, "c-fail", COMMAND_TYPE_CORE_UPDATE, {})
+    assert result["status"] == "error"
+    assert "update.install failed" in result["detail"]
+
+
+def test_as_int_percent_normalizes_and_clamps():
+    assert commands._as_int_percent(42.6) == 43
+    assert commands._as_int_percent(7) == 7
+    assert commands._as_int_percent(-3) == 0
+    assert commands._as_int_percent(250) == 100
+    assert commands._as_int_percent(None) is None
+    assert commands._as_int_percent(True) is None
+    assert commands._as_int_percent("42") is None
