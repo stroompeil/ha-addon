@@ -211,39 +211,47 @@ async def test_collect_status_critical_logs_empty_without_buffer():
 
 
 @pytest.mark.asyncio
-async def test_collect_status_reports_ram_and_disk_metrics(monkeypatch):
-    async def fake_system_info(hass):
-        return {
-            "updates": [],
-            "memory_percent": 43.56,
-            "memory_total": 8192.0,
-            "disk_percent": 71.24,
-        }
+async def test_collect_status_reports_ram_and_disk_metrics(monkeypatch, tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        "MemTotal:       16384000 kB\n"
+        "MemFree:         2000000 kB\n"
+        "MemAvailable:    9270000 kB\n"
+    )
+    monkeypatch.setattr(status, "_MEMINFO_PATH", str(meminfo))
 
-    monkeypatch.setattr(status.system_info, "async_get_system_info", fake_system_info)
-    payload = await status.collect_status(FakeHass())
-    assert payload["ram_used_percent"] == 43.6
-    assert payload["ram_total_mb"] == 8192.0
-    assert payload["disk_used_percent"] == 71.2
+    hass = FakeHass()
+    hass.config.config_dir = str(tmp_path)
+    monkeypatch.setattr(status.shutil, "disk_usage", lambda p: type("U", (), {"total": 100, "used": 71})())
+    payload = await status.collect_status(hass)
+    assert payload["ram_used_percent"] == 43.4
+    assert payload["ram_total_mb"] == 16000.0
+    assert payload["disk_used_percent"] == 71.0
 
 
 @pytest.mark.asyncio
-async def test_collect_status_ram_and_disk_zero_without_supervisor():
-    payload = await status.collect_status(FakeHass())
+async def test_collect_status_ram_and_disk_zero_without_proc(monkeypatch):
+    monkeypatch.setattr(status, "_MEMINFO_PATH", "/nonexistent/meminfo")
+
+    hass = FakeHass()
+    hass.config.config_dir = "/nonexistent/config"
+    payload = await status.collect_status(hass)
     assert payload["ram_used_percent"] == 0.0
     assert payload["ram_total_mb"] == 0.0
     assert payload["disk_used_percent"] == 0.0
 
 
 @pytest.mark.asyncio
-async def test_collect_status_ram_and_disk_tolerate_bad_values(monkeypatch):
-    async def fake_system_info(hass):
-        return {"updates": [], "memory_percent": "lots", "memory_total": None}
+async def test_collect_status_disk_zero_without_config_dir(monkeypatch, tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 100 kB\nMemAvailable: 40 kB\n")
+    monkeypatch.setattr(status, "_MEMINFO_PATH", str(meminfo))
 
-    monkeypatch.setattr(status.system_info, "async_get_system_info", fake_system_info)
-    payload = await status.collect_status(FakeHass())
-    assert payload["ram_used_percent"] == 0.0
-    assert payload["ram_total_mb"] == 0.0
+    hass = FakeHass()
+    hass.config.config_dir = None
+    payload = await status.collect_status(hass)
+    assert payload["ram_used_percent"] == 60.0
+    assert payload["ram_total_mb"] == 0.1
     assert payload["disk_used_percent"] == 0.0
 
 
