@@ -60,6 +60,9 @@ async def test_collect_status_shape():
     assert payload["available_updates"] == []
     assert payload["ha_latest_version"] == ""
     assert payload["extra"] == {}
+    assert payload["cpu_count"] >= 0
+    assert isinstance(payload["load_avg_1m"], float)
+    assert payload["cpu_percent"] is None  # first frame has no delta yet
     assert payload["addon_running_version"] == ""
     assert payload["addon_installed_version"] == ""
     assert isinstance(payload["uptime_seconds"], int)
@@ -129,8 +132,49 @@ def test_uptime_seconds_positive_when_started_in_past():
     assert uptime <= 110
 
 
-def test_cpu_load_is_a_float():
-    assert isinstance(status._cpu_load(), float)
+def test_cpu_percent_none_on_first_sample(monkeypatch, tmp_path):
+    stat = tmp_path / "stat"
+    stat.write_text("cpu  100 0 100 700 0 0 0\n")
+    monkeypatch.setattr(status, "_STAT_PATH", str(stat))
+    status._last_cpu_times = None
+    assert status._cpu_percent() is None
+
+
+def test_cpu_percent_delta_between_samples(monkeypatch, tmp_path):
+    stat = tmp_path / "stat"
+    monkeypatch.setattr(status, "_STAT_PATH", str(stat))
+    status._last_cpu_times = None
+    stat.write_text("cpu  100 0 100 700 0 0 0\n")
+    assert status._cpu_percent() is None
+    stat.write_text("cpu  200 0 100 1400 0 0 0\n")
+    # s1: total 900, idle 700; s2: total 1700, idle 1400
+    # Δtotal 800, Δidle 700 → 12.5% busy
+    assert status._cpu_percent() == 12.5
+
+
+def test_cpu_percent_none_without_proc_stat(monkeypatch):
+    monkeypatch.setattr(status, "_STAT_PATH", "/nonexistent/stat")
+    status._last_cpu_times = None
+    assert status._cpu_percent() is None
+
+
+def test_cpu_percent_idle_delta_zero_busy(monkeypatch, tmp_path):
+    stat = tmp_path / "stat"
+    monkeypatch.setattr(status, "_STAT_PATH", str(stat))
+    status._last_cpu_times = None
+    stat.write_text("cpu  0 0 0 900 0 0 0\n")
+    status._cpu_percent()
+    stat.write_text("cpu  0 0 0 1800 0 0 0\n")
+    # purely idle delta: total 900, idle 900 → 0% busy
+    assert status._cpu_percent() == 0.0
+
+
+def test_load_avg_1m_is_a_float():
+    assert isinstance(status._load_avg_1m(), float)
+
+
+def test_cpu_count_is_a_non_negative_int():
+    assert status._cpu_count() >= 0
 
 
 @pytest.mark.asyncio

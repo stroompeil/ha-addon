@@ -12,8 +12,11 @@ from typing import Any
 from .logs import collect_critical_logs
 
 _MEMINFO_PATH = "/proc/meminfo"
+_STAT_PATH = "/proc/stat"
 
 _LOGGER = logging.getLogger(__name__)
+
+_last_cpu_times: tuple[float, float] | None = None
 
 
 async def collect_status(hass) -> dict[str, Any]:
@@ -24,7 +27,9 @@ async def collect_status(hass) -> dict[str, Any]:
         "ha_version": _ha_version(hass),
         "uptime_seconds": _uptime_seconds(hass),
         "entity_count": len(hass.states.async_entity_ids()),
-        "cpu_load": _cpu_load(),
+        "cpu_percent": _cpu_percent(),
+        "load_avg_1m": _load_avg_1m(),
+        "cpu_count": _cpu_count(),
         "ram_used_percent": _ram_used_percent(),
         "ram_total_mb": _ram_total_mb(),
         "disk_used_percent": _disk_used_percent(hass),
@@ -125,13 +130,51 @@ def _uptime_seconds(hass) -> int:
     return int((now - started).total_seconds())
 
 
-def _cpu_load() -> float:
+def _cpu_percent() -> float | None:
+    """Host CPU utilization percent between two /proc/stat reads (ADR 0040).
+
+    Reads the aggregate `cpu` line once on the first status frame and again
+    on the next, reporting the delta — the same approach HA's own system
+    monitor uses. None until a second sample exists (a missing reading is
+    data, not 0) and on non-Linux hosts; never raises.
+    """
+    global _last_cpu_times
+    try:
+        with open(_STAT_PATH, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("cpu "):
+                    parts = [float(v) for v in line.split()[1:]]
+                    total = sum(parts)
+                    idle = parts[3] + (parts[4] if len(parts) > 4 else 0.0)
+                    break
+            else:
+                return None
+        previous = _last_cpu_times
+        _last_cpu_times = (total, idle)
+        if previous is None or total <= previous[0]:
+            return None
+        return round((1.0 - (idle - previous[1]) / (total - previous[0])) * 100.0, 1)
+    except Exception as exc:  # noqa: BLE001 - never raise out of status collection
+        _LOGGER.debug("cpu percent read failed: %s", exc)
+        return None
+
+
+def _load_avg_1m() -> float:
     try:
         import os
 
         return round(os.getloadavg()[0], 2) if hasattr(os, "getloadavg") else 0.0
     except Exception:
         return 0.0
+
+
+def _cpu_count() -> int:
+    try:
+        import os
+
+        return os.cpu_count() or 0
+    except Exception:
+        return 0
 
 
 def _ram_used_percent() -> float:
