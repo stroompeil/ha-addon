@@ -38,6 +38,65 @@ async def _send_progress_noop(phase: str, percent: int | None, version_target: s
     return None
 
 
+def _as_int_percent(value) -> int | None:
+    """Normalize HA's `update_percentage` (int | float | None) to a 0-100 int."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0, min(100, round(value)))
+
+
+async def _narrate_install_progress(hass, entity_id, send, target, detail, iterations) -> None:
+    """Poll the update entity and emit a progress frame per change (ADR 0019/0038).
+
+    Runs concurrently with the `update.install` service call so mid-install
+    percentages reach the manager while the download is in flight. Stops when
+    the entity leaves `in_progress` or the iteration budget is exhausted;
+    the install task's completion is awaited by the caller regardless.
+    """
+    last_percent: int | None = None
+    for _ in range(iterations):
+        await asyncio.sleep(1)
+        state = hass.states.get(entity_id)
+        if state is None:
+            continue
+        in_progress = bool(state.attributes.get("in_progress"))
+        percent = _as_int_percent(state.attributes.get("update_percentage"))
+        if percent is None and in_progress:
+            percent = last_percent
+        if percent != last_percent or in_progress:
+            await send("installing", percent, target, "downloading" if in_progress else detail)
+            last_percent = percent
+        if not in_progress:
+            break
+
+
+async def _install_with_progress(hass, entity_id, install_args, send, target, detail, iterations):
+    """Run `update.install` while narrating its live percentage (ADR 0038).
+
+    The service call blocks until HA finishes the install, so the narration
+    poll must run as a sibling task, not after it. Returns the install
+    exception (or None on success); the poll task is always cancelled and
+    awaited before returning.
+    """
+    install_task = asyncio.ensure_future(
+        hass.services.async_call("update", "install", install_args, blocking=True)
+    )
+    poll_task = asyncio.ensure_future(
+        _narrate_install_progress(hass, entity_id, send, target, detail, iterations)
+    )
+    try:
+        await install_task
+        return None
+    except Exception as exc:  # noqa: BLE001 - reported to the server as an error result
+        return exc
+    finally:
+        poll_task.cancel()
+        try:
+            await poll_task
+        except asyncio.CancelledError:
+            pass
+
+
 async def _handle_restart(hass, args: dict[str, Any], send_progress: SendProgress | None) -> dict[str, Any]:
     """Restart Home Assistant. The socket will drop; that's expected."""
     hass.async_create_task(hass.services.async_call("homeassistant", "restart"))
@@ -69,30 +128,18 @@ async def _handle_update(hass, args: dict[str, Any], send_progress: SendProgress
         return {"status": "ok", "detail": f"already on {installed}"}
 
     await send("checking", None, target or "", "checking for update")
-    try:
-        await hass.services.async_call(
-            "update", "install", {"entity_id": entity_id, **({"version": version} if version else {})},
-            blocking=True,
-        )
-    except Exception as exc:
+    exc = await _install_with_progress(
+        hass,
+        entity_id,
+        {"entity_id": entity_id, **({"version": version} if version else {})},
+        send,
+        target or "",
+        "installing",
+        120,
+    )
+    if exc is not None:
         _LOGGER.exception("HACS update.install failed for %s", entity_id)
         return {"status": "error", "detail": f"update.install failed: {exc}"}
-
-    last_percent: int | None = None
-    for _ in range(120):
-        await asyncio.sleep(1)
-        state = hass.states.get(entity_id)
-        if state is None:
-            break
-        in_progress = bool(state.attributes.get("in_progress"))
-        percent = state.attributes.get("update_percentage")
-        if percent is None and in_progress:
-            percent = last_percent
-        if percent != last_percent or in_progress:
-            await send("installing", percent, target or "", "downloading" if in_progress else "installing")
-            last_percent = percent
-        if not in_progress:
-            break
 
     await send("installed", None, target or "", "HACS install complete, restarting to load new code")
     hass.async_create_task(hass.services.async_call("homeassistant", "restart"))
@@ -181,30 +228,18 @@ async def _handle_core_update(hass, args: dict[str, Any], send_progress: SendPro
         return {"status": "ok", "detail": f"already on {installed}"}
 
     await send("checking", None, target or "", "checking for core update")
-    try:
-        await hass.services.async_call(
-            "update", "install", {"entity_id": entity_id, **({"version": version} if version else {})},
-            blocking=True,
-        )
-    except Exception as exc:
+    exc = await _install_with_progress(
+        hass,
+        entity_id,
+        {"entity_id": entity_id, **({"version": version} if version else {})},
+        send,
+        target or "",
+        "installing",
+        1800,
+    )
+    if exc is not None:
         _LOGGER.exception("core update.install failed for %s", entity_id)
         return {"status": "error", "detail": f"update.install failed: {exc}"}
-
-    last_percent: int | None = None
-    for _ in range(1800):
-        await asyncio.sleep(1)
-        state = hass.states.get(entity_id)
-        if state is None:
-            break
-        in_progress = bool(state.attributes.get("in_progress"))
-        percent = state.attributes.get("update_percentage")
-        if percent is None and in_progress:
-            percent = last_percent
-        if percent != last_percent or in_progress:
-            await send("installing", percent, target or "", "downloading" if in_progress else "installing")
-            last_percent = percent
-        if not in_progress:
-            break
 
     await send("installed", None, target or "", "core install complete, restarting to load new version")
     hass.async_create_task(hass.services.async_call("homeassistant", "restart"))
@@ -241,17 +276,19 @@ async def _handle_updates_all(hass, args: dict[str, Any], send_progress: SendPro
         state = hass.states.get(entity_id)
         name = (state.attributes.get("friendly_title") if state else None) or entity_id
         await send("installing", int(i * 100 / len(targets)), "", f"updating {name}")
-        try:
-            await hass.services.async_call("update", "install", {"entity_id": entity_id}, blocking=True)
-        except Exception as exc:  # noqa: BLE001 - one failure must not stop the batch
+        exc = await _install_with_progress(
+            hass,
+            entity_id,
+            {"entity_id": entity_id},
+            send,
+            "",
+            f"updating {name}",
+            600,
+        )
+        if exc is not None:  # noqa: BLE001 - one failure must not stop the batch
             _LOGGER.warning("updates.all: install failed for %s: %s", entity_id, exc)
             failed.append({"entity_id": entity_id, "error": str(exc)})
             continue
-        for _ in range(600):
-            await asyncio.sleep(1)
-            state = hass.states.get(entity_id)
-            if state is None or not bool(state.attributes.get("in_progress")):
-                break
         installed.append(entity_id)
     summary = f"{len(installed)} updated, {len(failed)} failed"
     data: dict[str, Any] = {"installed": installed}
