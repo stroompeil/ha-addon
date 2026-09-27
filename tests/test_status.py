@@ -60,6 +60,9 @@ async def test_collect_status_shape():
     assert payload["available_updates"] == []
     assert payload["ha_latest_version"] == ""
     assert payload["extra"] == {}
+    assert payload["cpu_count"] >= 0
+    assert isinstance(payload["load_avg_1m"], float)
+    assert payload["cpu_percent"] is None  # first frame has no delta yet
     assert payload["addon_running_version"] == ""
     assert payload["addon_installed_version"] == ""
     assert isinstance(payload["uptime_seconds"], int)
@@ -129,8 +132,49 @@ def test_uptime_seconds_positive_when_started_in_past():
     assert uptime <= 110
 
 
-def test_cpu_load_is_a_float():
-    assert isinstance(status._cpu_load(), float)
+def test_cpu_percent_none_on_first_sample(monkeypatch, tmp_path):
+    stat = tmp_path / "stat"
+    stat.write_text("cpu  100 0 100 700 0 0 0\n")
+    monkeypatch.setattr(status, "_STAT_PATH", str(stat))
+    status._last_cpu_times = None
+    assert status._cpu_percent() is None
+
+
+def test_cpu_percent_delta_between_samples(monkeypatch, tmp_path):
+    stat = tmp_path / "stat"
+    monkeypatch.setattr(status, "_STAT_PATH", str(stat))
+    status._last_cpu_times = None
+    stat.write_text("cpu  100 0 100 700 0 0 0\n")
+    assert status._cpu_percent() is None
+    stat.write_text("cpu  200 0 100 1400 0 0 0\n")
+    # s1: total 900, idle 700; s2: total 1700, idle 1400
+    # Δtotal 800, Δidle 700 → 12.5% busy
+    assert status._cpu_percent() == 12.5
+
+
+def test_cpu_percent_none_without_proc_stat(monkeypatch):
+    monkeypatch.setattr(status, "_STAT_PATH", "/nonexistent/stat")
+    status._last_cpu_times = None
+    assert status._cpu_percent() is None
+
+
+def test_cpu_percent_idle_delta_zero_busy(monkeypatch, tmp_path):
+    stat = tmp_path / "stat"
+    monkeypatch.setattr(status, "_STAT_PATH", str(stat))
+    status._last_cpu_times = None
+    stat.write_text("cpu  0 0 0 900 0 0 0\n")
+    status._cpu_percent()
+    stat.write_text("cpu  0 0 0 1800 0 0 0\n")
+    # purely idle delta: total 900, idle 900 → 0% busy
+    assert status._cpu_percent() == 0.0
+
+
+def test_load_avg_1m_is_a_float():
+    assert isinstance(status._load_avg_1m(), float)
+
+
+def test_cpu_count_is_a_non_negative_int():
+    assert status._cpu_count() >= 0
 
 
 @pytest.mark.asyncio
@@ -211,39 +255,47 @@ async def test_collect_status_critical_logs_empty_without_buffer():
 
 
 @pytest.mark.asyncio
-async def test_collect_status_reports_ram_and_disk_metrics(monkeypatch):
-    async def fake_system_info(hass):
-        return {
-            "updates": [],
-            "memory_percent": 43.56,
-            "memory_total": 8192.0,
-            "disk_percent": 71.24,
-        }
+async def test_collect_status_reports_ram_and_disk_metrics(monkeypatch, tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        "MemTotal:       16384000 kB\n"
+        "MemFree:         2000000 kB\n"
+        "MemAvailable:    9270000 kB\n"
+    )
+    monkeypatch.setattr(status, "_MEMINFO_PATH", str(meminfo))
 
-    monkeypatch.setattr(status.system_info, "async_get_system_info", fake_system_info)
-    payload = await status.collect_status(FakeHass())
-    assert payload["ram_used_percent"] == 43.6
-    assert payload["ram_total_mb"] == 8192.0
-    assert payload["disk_used_percent"] == 71.2
+    hass = FakeHass()
+    hass.config.config_dir = str(tmp_path)
+    monkeypatch.setattr(status.shutil, "disk_usage", lambda p: type("U", (), {"total": 100, "used": 71})())
+    payload = await status.collect_status(hass)
+    assert payload["ram_used_percent"] == 43.4
+    assert payload["ram_total_mb"] == 16000.0
+    assert payload["disk_used_percent"] == 71.0
 
 
 @pytest.mark.asyncio
-async def test_collect_status_ram_and_disk_zero_without_supervisor():
-    payload = await status.collect_status(FakeHass())
+async def test_collect_status_ram_and_disk_zero_without_proc(monkeypatch):
+    monkeypatch.setattr(status, "_MEMINFO_PATH", "/nonexistent/meminfo")
+
+    hass = FakeHass()
+    hass.config.config_dir = "/nonexistent/config"
+    payload = await status.collect_status(hass)
     assert payload["ram_used_percent"] == 0.0
     assert payload["ram_total_mb"] == 0.0
     assert payload["disk_used_percent"] == 0.0
 
 
 @pytest.mark.asyncio
-async def test_collect_status_ram_and_disk_tolerate_bad_values(monkeypatch):
-    async def fake_system_info(hass):
-        return {"updates": [], "memory_percent": "lots", "memory_total": None}
+async def test_collect_status_disk_zero_without_config_dir(monkeypatch, tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 100 kB\nMemAvailable: 40 kB\n")
+    monkeypatch.setattr(status, "_MEMINFO_PATH", str(meminfo))
 
-    monkeypatch.setattr(status.system_info, "async_get_system_info", fake_system_info)
-    payload = await status.collect_status(FakeHass())
-    assert payload["ram_used_percent"] == 0.0
-    assert payload["ram_total_mb"] == 0.0
+    hass = FakeHass()
+    hass.config.config_dir = None
+    payload = await status.collect_status(hass)
+    assert payload["ram_used_percent"] == 60.0
+    assert payload["ram_total_mb"] == 0.1
     assert payload["disk_used_percent"] == 0.0
 
 
