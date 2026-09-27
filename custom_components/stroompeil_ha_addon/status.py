@@ -6,17 +6,17 @@ MUST match the server's `StatusFrame`.
 from __future__ import annotations
 
 import logging
+import shutil
 from typing import Any
 
-import homeassistant.helpers.system_info as system_info
-
 from .logs import collect_critical_logs
+
+_MEMINFO_PATH = "/proc/meminfo"
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def collect_status(hass) -> dict[str, Any]:
-    info = await system_info.async_get_system_info(hass)
     running, installed = await _addon_versions(hass)
     return {
         "msg_type": "status",
@@ -25,14 +25,14 @@ async def collect_status(hass) -> dict[str, Any]:
         "uptime_seconds": _uptime_seconds(hass),
         "entity_count": len(hass.states.async_entity_ids()),
         "cpu_load": _cpu_load(),
-        "ram_used_percent": _metric(info, "memory_percent"),
-        "ram_total_mb": _metric(info, "memory_total"),
-        "disk_used_percent": _metric(info, "disk_percent"),
+        "ram_used_percent": _ram_used_percent(),
+        "ram_total_mb": _ram_total_mb(),
+        "disk_used_percent": _disk_used_percent(hass),
         "integrations": sorted(hass.data.get("custom_components", {}).keys()),
         "addons": _addons(hass),
         "automation_count": _domain_count(hass, "automation"),
         "dashboard_count": _dashboard_count(hass),
-        "available_updates": list(info.get("updates", [])) if isinstance(info, dict) else [],
+        "available_updates": _available_updates(hass),
         "ha_latest_version": _ha_latest_version(hass),
         "addon_running_version": running,
         "addon_installed_version": installed,
@@ -134,18 +134,90 @@ def _cpu_load() -> float:
         return 0.0
 
 
-def _metric(info: Any, key: str) -> float:
-    """Read a numeric host metric from Supervisor system info (ADR 0032).
+def _ram_used_percent() -> float:
+    """Host memory in use, percent, from /proc/meminfo.
 
-    `async_get_system_info` returns the Supervisor's system-info payload on
-    HA OS / Supervised installs and a minimal dict otherwise. Missing or
-    non-numeric values report 0.0; collection never raises.
+    MemAvailable is the honest "could be given to a process without swapping"
+    figure, matching what HA's own system monitor reports. Reading /proc
+    directly works on every Linux install type (OS, Supervised, Container,
+    Core in a venv) with no Supervisor round-trip. Best-effort: 0.0 on
+    non-Linux hosts or a missing/unparseable file; never raises.
     """
     try:
-        value = info.get(key) if isinstance(info, dict) else None
-        return round(float(value), 1) if value is not None else 0.0
-    except (TypeError, ValueError):
+        with open(_MEMINFO_PATH, encoding="utf-8") as fh:
+            fields: dict[str, float] = {}
+            for line in fh:
+                key, _, rest = line.partition(":")
+                value = rest.split()[0] if rest.split() else "0"
+                fields[key.strip()] = float(value)
+        total = fields.get("MemTotal", 0.0)
+        available = fields.get("MemAvailable", fields.get("MemFree", 0.0))
+        if total <= 0:
+            return 0.0
+        return round((total - available) / total * 100.0, 1)
+    except Exception as exc:  # noqa: BLE001 - never raise out of status collection
+        _LOGGER.debug("meminfo read failed: %s", exc)
         return 0.0
+
+
+def _ram_total_mb() -> float:
+    """Host memory total in MB from /proc/meminfo (kB lines / 1024).
+
+    Best-effort: 0.0 on failure; never raises.
+    """
+    try:
+        with open(_MEMINFO_PATH, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    return round(float(line.split()[1]) / 1024.0, 1)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("meminfo read failed: %s", exc)
+    return 0.0
+
+
+def _disk_used_percent(hass) -> float:
+    """Data-disk usage percent via shutil.disk_usage on the config directory.
+
+    The config directory is where recorder data, backups, and the SQLite DB
+    live — the disk whose exhaustion takes the host down. Works on every
+    Linux install type with no Supervisor round-trip. Best-effort: 0.0 on
+    failure; never raises.
+    """
+    try:
+        config_dir = getattr(getattr(hass, "config", None), "config_dir", None)
+        if not config_dir:
+            return 0.0
+        usage = shutil.disk_usage(config_dir)
+        if usage.total <= 0:
+            return 0.0
+        return round(usage.used / usage.total * 100.0, 1)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("disk usage read failed: %s", exc)
+        return 0.0
+
+
+def _available_updates(hass) -> list[str]:
+    """Pending update labels from update entities (ADR 0028's `"core"` contract).
+
+    `"core"` is reported when the Supervisor's core update entity exists and
+    offers a newer version. HACS repository entities are best-effort extras
+    and not part of the reconciliation contract. Best-effort; never raises.
+    """
+    updates: list[str] = []
+    try:
+        from .commands import find_core_update_entity
+
+        entity_id = find_core_update_entity(hass)
+        if entity_id:
+            state = hass.states.get(entity_id)
+            if state is not None:
+                installed = str(state.attributes.get("installed_version") or "")
+                latest = str(state.attributes.get("latest_version") or "")
+                if latest and latest != installed:
+                    updates.append("core")
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("available updates lookup failed: %s", exc)
+    return updates
 
 
 def _addons(hass) -> list[dict[str, Any]]:

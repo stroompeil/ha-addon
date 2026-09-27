@@ -56,22 +56,10 @@ jobs:
         with:
           ref: main
 
-      - name: Build HACS zip
-        run: |
-          (cd custom_components/stroompeil_ha_addon && zip -r "$GITHUB_WORKSPACE/stroompeil-ha-addon.zip" . -x '*.pyc' -x '*__pycache__*')
-
-      - name: Publish release
+      - name: Compute next version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Keep only the 5 most recent releases; delete older ones.
-          gh release list --json tagName \
-            -q '.[].tagName' \
-            | sort -rV \
-            | tail -n +6 \
-            | while read -r tag; do
-                gh release delete "$tag" --cleanup-tag -y || true
-              done
           # Derive the next build number from the highest existing 0.1.x tag
           # so it keeps incrementing across branch switches or run-counter
           # resets (e.g. dev ended at build 40; main continues at 41).
@@ -81,10 +69,50 @@ jobs:
           if [ -z "$n" ] || ! [[ "$n" =~ ^[0-9]+$ ]]; then
             n=0
           fi
-          build="$((n + 1))"
+          echo "VERSION=0.1.$((n + 1))" >> "$GITHUB_ENV"
+
+      - name: Stamp version into manifests
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+
+          version = os.environ["VERSION"]
+          for path in (
+              "custom_components/stroompeil_ha_addon/manifest.json",
+              "manifest.json",
+          ):
+              with open(path, encoding="utf-8") as fh:
+                  data = json.load(fh)
+              data["version"] = version
+              with open(path, "w", encoding="utf-8") as fh:
+                  json.dump(data, fh, indent=2)
+                  fh.write("\n")
+          PYEOF
+
+      - name: Build HACS zip
+        run: |
+          (cd custom_components/stroompeil_ha_addon && zip -r "$GITHUB_WORKSPACE/stroompeil-ha-addon.zip" . -x '*.pyc' -x '*__pycache__*')
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          # Keep only the 5 most recent releases; delete older ones.
+          gh release list --json tagName \
+            -q '.[].tagName' \
+            | sort -rV \
+            | tail -n +6 \
+            | while read -r tag; do
+                gh release delete "$tag" --cleanup-tag -y || true
+              done
           # Create a new release with a unique, incrementing tag so HACS
           # detects it as a new version and offers an update.
-          gh release create "0.1.${build}" stroompeil-ha-addon.zip \
+          build="${VERSION#0.1.}"
+          gh release create "$VERSION" stroompeil-ha-addon.zip \
             --target main \
             --title "Dev build ${build}" \
             --notes "Auto-generated build from ${GITHUB_SHA::7}."

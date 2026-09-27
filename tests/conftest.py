@@ -98,13 +98,6 @@ def _install_ha_stubs() -> None:
     issue_registry.created = created  # type: ignore[attr-defined]
     issue_registry.deleted = deleted  # type: ignore[attr-defined]
 
-    system_info = _install_module("homeassistant.helpers.system_info")
-
-    async def async_get_system_info(hass):
-        return {"updates": []}
-
-    system_info.async_get_system_info = async_get_system_info  # type: ignore[attr-defined]
-
     entity_platform = _install_module("homeassistant.helpers.entity_platform")
     entity_platform.AddEntitiesCallback = object  # type: ignore[attr-defined]
 
