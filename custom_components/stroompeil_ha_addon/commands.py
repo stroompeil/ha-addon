@@ -52,20 +52,41 @@ async def _narrate_install_progress(hass, entity_id, send, target, detail, itera
     percentages reach the manager while the download is in flight. Stops when
     the entity leaves `in_progress` or the iteration budget is exhausted;
     the install task's completion is awaited by the caller regardless.
+
+    HA's core update entity can freeze on one percentage for many minutes while
+    the Supervisor installs (long download/unpack steps emit no new values).
+    After `stalled_polls` consecutive polls with an unchanged percentage, the
+    narration switches to indeterminate frames (`percent=None`), which the
+    manager renders as a plain "in progress" line instead of a stuck "N%".
     """
+    stalled_polls = 30
     last_percent: int | None = None
+    last_raw_percent: int | None = None
+    same_percent_polls = 0
+    indeterminate = False
     for _ in range(iterations):
         await asyncio.sleep(1)
         state = hass.states.get(entity_id)
         if state is None:
             continue
         in_progress = bool(state.attributes.get("in_progress"))
-        percent = _as_int_percent(state.attributes.get("update_percentage"))
-        if percent is None and in_progress:
+        raw_percent = _as_int_percent(state.attributes.get("update_percentage"))
+        if raw_percent != last_raw_percent:
+            same_percent_polls = 0
+            indeterminate = False
+        elif in_progress:
+            same_percent_polls += 1
+        else:
+            same_percent_polls = 0
+        if same_percent_polls >= stalled_polls:
+            indeterminate = True
+        percent = raw_percent if not indeterminate else None
+        if percent is None and in_progress and not indeterminate:
             percent = last_percent
         if percent != last_percent or in_progress:
             await send("installing", percent, target, "downloading" if in_progress else detail)
             last_percent = percent
+        last_raw_percent = raw_percent
         if not in_progress:
             break
 

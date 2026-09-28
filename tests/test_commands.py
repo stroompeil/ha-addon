@@ -548,6 +548,58 @@ async def test_core_update_narrates_live_percent_during_install(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_core_update_narration_goes_indeterminate_when_percent_stalls(monkeypatch):
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0.001))
+
+    entity_id = CORE_ENTITY
+
+    class StalledInstallServices(_SlowInstallServices):
+        async def async_call(self, domain, service, data=None, blocking=False):
+            await super().async_call(domain, service, data, blocking)
+            if domain != "update" or service != "install":
+                return
+            states = self._hass.states
+            states._entities[self._entity_id] = FakeState({
+                "installed_version": "2026.9.0",
+                "latest_version": "2026.9.1",
+                "in_progress": True,
+                "update_percentage": 19,
+            })
+            for _ in range(60):
+                await _REAL_SLEEP(0.001)
+            states._entities[self._entity_id] = FakeState({
+                "installed_version": "2026.9.1",
+                "latest_version": "2026.9.1",
+                "in_progress": False,
+                "update_percentage": None,
+            })
+
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": "2026.9.0", "latest_version": "2026.9.1",
+        "in_progress": False, "update_percentage": None,
+    })})
+    hass = FakeHass(states=states)
+    hass.services = StalledInstallServices(hass, entity_id, steps=(19,))
+    progress: list[tuple] = []
+
+    async def send_progress(phase, percent, version_target, detail):
+        progress.append((phase, percent, version_target, detail))
+
+    result = await commands.dispatch_command(
+        hass, "c-stall", COMMAND_TYPE_CORE_UPDATE, {}, send_progress
+    )
+    assert result["status"] == "dispatched"
+    installing = [p for p in progress if p[0] == "installing"]
+    assert installing, "expected installing frames"
+    assert installing[0][1] == 19
+    assert any(p[1] is None for p in installing[1:]), (
+        "narration should switch to indeterminate frames while the percent stalls"
+    )
+    assert progress[-1][0] == "installed"
+
+
+@pytest.mark.asyncio
 async def test_core_update_install_failure_during_narration_returns_error(monkeypatch):
     _real_sleep = asyncio.sleep
     monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0.001))
