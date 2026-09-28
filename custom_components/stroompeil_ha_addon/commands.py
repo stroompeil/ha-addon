@@ -21,6 +21,7 @@ from .const import (
     COMMAND_TYPE_UPDATE,
     COMMAND_TYPE_CORE_UPDATE,
     COMMAND_TYPE_UPDATES_ALL,
+    COMMAND_TYPE_ADDON_UPDATE,
     DOMAIN,
 )
 from .logs import DEFAULT_LIMIT, DEFAULT_MIN_LEVEL, collect_critical_logs
@@ -322,12 +323,95 @@ async def _handle_updates_all(hass, args: dict[str, Any], send_progress: SendPro
     return {"status": status, "detail": summary, "data": data}
 
 
+def find_addon_update_entity(hass, slug: str) -> str:
+    """Locate the Supervisor update entity for an add-on slug (ADR 0042).
+
+    Supervisor names the entity after the add-on, but the id is a convention,
+    not a contract, so match on the entity's title attributes first and fall
+    back to a case-insensitive slug substring. Returns "" when the add-on
+    has no update entity (non-Supervised install, entity disabled, unknown
+    slug) — absence is a normal state, never an exception.
+    """
+    if not slug:
+        return ""
+    wanted = slug.lower()
+    try:
+        for entity_id in hass.states.async_entity_ids("update"):
+            state = hass.states.get(entity_id)
+            if state is None:
+                continue
+            title = (
+                state.attributes.get("friendly_title")
+                or state.attributes.get("title")
+                or ""
+            )
+            if title and title.lower() == wanted:
+                return entity_id
+        for entity_id in hass.states.async_entity_ids("update"):
+            if wanted in entity_id.lower():
+                return entity_id
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("addon update entity lookup failed: %s", exc)
+    return ""
+
+
+async def _handle_addon_update(hass, args: dict[str, Any], send_progress: SendProgress | None) -> dict[str, Any]:
+    """Update one Supervisor add-on via its update entity (ADR 0042).
+
+    The add-on container restarts inside Supervisor; HA core keeps running,
+    so the agent socket survives and the normal result frame closes the
+    command. No HA restart is ever queued here.
+    """
+    send = send_progress or _send_progress_noop
+    slug = str(args.get("slug") or "")
+    version = args.get("version") or ""
+
+    entity_id = find_addon_update_entity(hass, slug)
+    if not entity_id:
+        return {
+            "status": "error",
+            "detail": f"no update entity for add-on '{slug}' (Supervisor required, entity disabled, or unknown slug)",
+        }
+
+    state = hass.states.get(entity_id)
+    if state is None:
+        return {"status": "error", "detail": "update entity unavailable"}
+    installed = state.attributes.get("installed_version")
+    latest = state.attributes.get("latest_version")
+
+    target = version or latest
+    if target and installed == target:
+        return {"status": "ok", "detail": f"{slug} already on {installed}"}
+
+    await send("checking", None, target or "", f"checking for {slug} update")
+    exc = await _install_with_progress(
+        hass,
+        entity_id,
+        {"entity_id": entity_id, **({"version": version} if version else {})},
+        send,
+        target or "",
+        f"updating {slug}",
+        600,
+    )
+    if exc is not None:
+        _LOGGER.warning("addon update.install failed for %s: %s", entity_id, exc)
+        return {"status": "error", "detail": f"update.install failed: {exc}"}
+
+    await send("installed", None, target or "", f"{slug} install complete")
+    return {
+        "status": "ok",
+        "detail": f"{slug} updated to {target or 'latest'}",
+        "data": {"slug": slug, "entity_id": entity_id, "version": str(target or "")},
+    }
+
+
 ALLOWED_COMMANDS: dict[str, CommandHandler] = {
     COMMAND_TYPE_RESTART: _handle_restart,
     COMMAND_TYPE_UPDATE: _handle_update,
     COMMAND_TYPE_CORE_UPDATE: _handle_core_update,
     COMMAND_TYPE_LOGS: _handle_logs,
     COMMAND_TYPE_UPDATES_ALL: _handle_updates_all,
+    COMMAND_TYPE_ADDON_UPDATE: _handle_addon_update,
 }
 
 

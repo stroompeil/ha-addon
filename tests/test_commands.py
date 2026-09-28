@@ -18,6 +18,7 @@ from custom_components.stroompeil_ha_addon.const import (
     COMMAND_TYPE_RESTART,
     COMMAND_TYPE_UPDATE,
     COMMAND_TYPE_UPDATES_ALL,
+    COMMAND_TYPE_ADDON_UPDATE,
     DOMAIN,
 )
 
@@ -114,12 +115,14 @@ def test_known_commands_are_allowlisted():
         COMMAND_TYPE_CORE_UPDATE,
         COMMAND_TYPE_LOGS,
         COMMAND_TYPE_UPDATES_ALL,
+        COMMAND_TYPE_ADDON_UPDATE,
     }
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_RESTART])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_UPDATE])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_CORE_UPDATE])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_LOGS])
     assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_UPDATES_ALL])
+    assert callable(commands.ALLOWED_COMMANDS[COMMAND_TYPE_ADDON_UPDATE])
 
 
 class _UpdateEntity(FakeState):
@@ -630,3 +633,123 @@ def test_as_int_percent_normalizes_and_clamps():
     assert commands._as_int_percent(None) is None
     assert commands._as_int_percent(True) is None
     assert commands._as_int_percent("42") is None
+
+
+class _AddonInstallDoneServices(FakeServices):
+    """update.install completes immediately for the target entity."""
+
+    def __init__(self, hass, entity_id, new_version):
+        super().__init__()
+        self._hass = hass
+        self._entity_id = entity_id
+        self._new_version = new_version
+
+    async def async_call(self, domain, service, data=None, blocking=False):
+        await super().async_call(domain, service, data, blocking)
+        if domain == "update" and service == "install":
+            self._hass.states._entities[self._entity_id] = FakeState(
+                {"installed_version": self._new_version, "latest_version": self._new_version, "in_progress": False}
+            )
+
+
+def _make_addon_hass(*, installed, latest, slug="zigbee2mqtt", title=None, new_version=None):
+    entity_id = f"update.{slug}_update"
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": installed,
+        "latest_version": latest,
+        "in_progress": False,
+        "update_percentage": None,
+        **({"friendly_title": title} if title else {}),
+    })})
+    hass = FakeHass(states=states)
+    hass.services = _AddonInstallDoneServices(hass, entity_id, new_version or latest)
+    return hass
+
+
+@pytest.mark.asyncio
+async def test_addon_update_returns_error_without_entity():
+    hass = FakeHass(states=FakeStates({}))
+    result = await commands.dispatch_command(hass, "a1", COMMAND_TYPE_ADDON_UPDATE, {"slug": "zigbee2mqtt"})
+    assert result["status"] == "error"
+    assert "no update entity for add-on" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_addon_update_returns_error_without_slug():
+    hass = FakeHass(states=FakeStates({}))
+    result = await commands.dispatch_command(hass, "a2", COMMAND_TYPE_ADDON_UPDATE, {})
+    assert result["status"] == "error"
+    assert "no update entity for add-on" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_addon_update_already_on_target_returns_ok():
+    hass = _make_addon_hass(installed="1.4.0", latest="1.4.0")
+    result = await commands.dispatch_command(hass, "a3", COMMAND_TYPE_ADDON_UPDATE, {"slug": "zigbee2mqtt"})
+    assert result["status"] == "ok"
+    assert "already on" in result["detail"]
+    assert hass.services.calls == []
+
+
+@pytest.mark.asyncio
+async def test_addon_update_finds_entity_by_title(monkeypatch):
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+    entity_id = "update.some_unrelated_id"
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": "1.4.0", "latest_version": "1.5.0",
+        "in_progress": False, "update_percentage": None,
+        "friendly_title": "Zigbee2MQTT",
+    })})
+    hass = FakeHass(states=states)
+    hass.services = _AddonInstallDoneServices(hass, entity_id, "1.5.0")
+    progress: list[tuple] = []
+
+    async def send_progress(phase, percent, version_target, detail):
+        progress.append((phase, percent, version_target, detail))
+
+    result = await commands.dispatch_command(
+        hass, "a4", COMMAND_TYPE_ADDON_UPDATE, {"slug": "zigbee2mqtt"}, send_progress
+    )
+    assert result["status"] == "ok"
+    assert result["detail"] == "zigbee2mqtt updated to 1.5.0"
+    called = [c[2]["entity_id"] for c in hass.services.calls if c[0] == "update"]
+    assert called == [entity_id]
+    phases = [p[0] for p in progress]
+    assert "checking" in phases
+    assert "installed" in phases
+    assert ("checking", None, "1.5.0", "checking for zigbee2mqtt update") in progress
+    assert not hass._tasks  # no restart is ever queued
+
+
+@pytest.mark.asyncio
+async def test_addon_update_pins_requested_version(monkeypatch):
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+    hass = _make_addon_hass(installed="1.4.0", latest="1.9.0", new_version="1.5.0")
+    result = await commands.dispatch_command(
+        hass, "a5", COMMAND_TYPE_ADDON_UPDATE, {"slug": "zigbee2mqtt", "version": "1.5.0"}
+    )
+    assert result["status"] == "ok"
+    install_calls = [c[2] for c in hass.services.calls if c[0] == "update" and c[1] == "install"]
+    assert install_calls[0]["version"] == "1.5.0"
+    assert result["detail"] == "zigbee2mqtt updated to 1.5.0"
+
+
+@pytest.mark.asyncio
+async def test_addon_update_install_failure_returns_error(monkeypatch):
+    class FailServices(FakeServices):
+        async def async_call(self, domain, service, data=None, blocking=False):
+            await super().async_call(domain, service, data, blocking)
+            if domain == "update":
+                raise RuntimeError("container build failed")
+
+    hass = _make_addon_hass(installed="1.4.0", latest="1.5.0")
+    hass.services = FailServices()
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+    result = await commands.dispatch_command(
+        hass, "a6", COMMAND_TYPE_ADDON_UPDATE, {"slug": "zigbee2mqtt"}
+    )
+    assert result["status"] == "error"
+    assert "update.install failed" in result["detail"]
