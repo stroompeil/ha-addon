@@ -53,22 +53,20 @@ def _make_client(*, entry=None, server_url="wss://fleet-dev.stroompeil.nl", toke
     return StroompeilHAAddonWSClient(FakeHass(), server_url, token, entry=entry)
 
 
-def test_agent_url_appends_token_with_question_mark():
+def test_agent_url_has_no_token_in_query_string():
     client = _make_client(server_url="wss://fleet-dev.stroompeil.nl")
+    assert client._agent_url() == "wss://fleet-dev.stroompeil.nl/agent"
 
-    assert client._agent_url() == "wss://fleet-dev.stroompeil.nl/agent?token=t1"
 
-
-def test_agent_url_preserves_existing_query_string():
-    client = _make_client(server_url="wss://fleet-dev.stroompeil.nl/?x=1")
-
-    assert client._agent_url() == "wss://fleet-dev.stroompeil.nl/?x=1/agent&token=t1"
+def test_agent_headers_carry_bearer_token():
+    client = _make_client(token="t1")
+    assert client._agent_headers() == {"Authorization": "Bearer t1"}
 
 
 def test_server_url_trailing_slash_is_stripped():
     client = _make_client(server_url="wss://fleet-dev.stroompeil.nl/")
 
-    assert client._agent_url() == "wss://fleet-dev.stroompeil.nl/agent?token=t1"
+    assert client._agent_url() == "wss://fleet-dev.stroompeil.nl/agent"
 
 
 @pytest.mark.asyncio
