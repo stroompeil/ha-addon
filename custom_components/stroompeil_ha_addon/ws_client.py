@@ -1,8 +1,9 @@
 """WebSocket client to the Stroompeil HA server.
 
-Connects to `<server_url>/agent?token=<token>`, sends a status snapshot every 60s, and
-handles inbound command frames. Reconnects with exponential backoff on any disconnect or
-error. Must never raise out of the integration.
+Connects to `<server_url>/agent`, authenticating with the token in an
+`Authorization: Bearer` header, sends a status snapshot every 60s, and
+handles inbound command frames. Reconnects with exponential backoff on any
+disconnect or error. Must never raise out of the integration.
 """
 from __future__ import annotations
 
@@ -85,8 +86,10 @@ class StroompeilHAAddonWSClient:
             await self._session.close()
 
     def _agent_url(self) -> str:
-        sep = "&" if "?" in self._server_url else "?"
-        return f"{self._server_url}/agent{sep}token={self._token}"
+        return f"{self._server_url}/agent"
+
+    def _agent_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._token}"}
 
     async def run(self) -> None:
         backoff = DEFAULT_BACKOFF_INITIAL_SECONDS
@@ -112,7 +115,9 @@ class StroompeilHAAddonWSClient:
             self._session = aiohttp.ClientSession()
         close_code = None
         try:
-            async with self._session.ws_connect(self._agent_url(), heartbeat=30) as ws:
+            async with self._session.ws_connect(
+                self._agent_url(), headers=self._agent_headers(), heartbeat=30
+            ) as ws:
                 self._ws = ws
                 self._set_connected(True)
                 _LOGGER.info("connected to Stroompeil HA server")
