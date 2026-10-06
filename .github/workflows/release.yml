@@ -3,18 +3,18 @@ name: Dev prerelease
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'brand/**'
-      - '.gitignore'
-      - 'LICENSE'
+    paths:
+      - 'custom_components/**'
+      - 'manifest.json'
+      - 'hacs.json'
+      - 'requirements_test.txt'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'brand/**'
-      - '.gitignore'
-      - 'LICENSE'
+    paths:
+      - 'custom_components/**'
+      - 'manifest.json'
+      - 'hacs.json'
+      - 'requirements_test.txt'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
