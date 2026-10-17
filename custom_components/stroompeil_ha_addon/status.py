@@ -126,8 +126,12 @@ def _uptime_seconds(hass) -> int:
     import time
     from datetime import datetime
 
-    now = datetime.fromtimestamp(time.time(), tz=started.tzinfo) if started.tzinfo else datetime.fromtimestamp(time.time())
-    return int((now - started).total_seconds())
+    if isinstance(started, datetime):
+        started = started.timestamp()
+    try:
+        return max(0, int(time.time() - float(started)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _cpu_percent() -> float | None:
