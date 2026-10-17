@@ -366,3 +366,17 @@ async def test_collect_status_automation_and_dashboard_counts_default_zero():
     payload = await status.collect_status(FakeHass())
     assert payload["automation_count"] == 0
     assert payload["dashboard_count"] == 0
+
+
+def test_uptime_seconds_from_float_started_at():
+    """Real Home Assistant sets hass.started_at to a float Unix timestamp."""
+    import time
+    hass = FakeHass(started_at=time.time() - 100)
+    uptime = status._uptime_seconds(hass)
+    assert 99 <= uptime <= 110
+
+
+def test_uptime_seconds_never_negative():
+    import time
+    hass = FakeHass(started_at=time.time() + 5000)
+    assert status._uptime_seconds(hass) == 0
