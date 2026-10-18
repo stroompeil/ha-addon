@@ -38,6 +38,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: ai-review
     steps:
       - uses: actions/checkout@v7
         with:
