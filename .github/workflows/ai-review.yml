@@ -89,18 +89,28 @@ jobs:
           done < /tmp/changed-files.txt
           head -c 150000 /tmp/pr-context.md > /tmp/pr-trimmed-context.md
 
+          # Previous AI review findings (to avoid duplication)
+          gh api "repos/$GH_REPO/pulls/$PR_NUMBER/comments" --paginate 2>/dev/null \
+            | jq -r '[.[] | select(.user.login == "github-actions[bot]") | .body] | join("\n---\n")' \
+            > /tmp/prev-findings.txt || true
+          gh api "repos/$GH_REPO/pulls/$PR_NUMBER/reviews" --paginate 2>/dev/null \
+            | jq -r '[.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("## AI Review")) | .body] | join("\n---\n")' \
+            >> /tmp/prev-findings.txt || true
+          head -c 50000 /tmp/prev-findings.txt > /tmp/prev-trimmed.txt || true
+
           BODY=$(jq -n \
             --arg model "$REVIEWER" \
             --argjson temp "$TEMPERATURE" \
             --arg diff "$(cat /tmp/pr-trimmed.diff)" \
             --arg context "$(cat /tmp/pr-trimmed-context.md)" \
+            --arg prev "$(cat /tmp/prev-trimmed.txt 2>/dev/null || true)" \
             '{
               model: $model,
               temperature: $temp,
               response_format: {type: "json_object"},
               messages: [
                 {role: "system", content: "You are an expert code reviewer. Review the pull request whose diff and context are provided by the user. Use the PR description, repo guidance, and the full contents of the changed files to understand intent and surrounding code; judge issues in that context rather than from the diff hunks alone. Report only real issues: bugs, security problems, performance problems, and clear style violations (follow the repo guidance where given). Be concise. Respond with a JSON object exactly of the form {\"findings\": [{\"file\": \"<path as shown in the diff>\", \"line\": <line number in the NEW version of the file>, \"comment\": \"<short explanation>\"}]}. The line number must refer to a line that is added or unchanged in the new version (a + or context line in the diff). Do not reference deleted lines. If there are no significant issues, respond with {\"findings\": []}."},
-                {role: "user", content: ("PR context (title, description, repo guidance, changed file contents):\n\n" + $context + "\n\nReview this diff:\n\n" + $diff)}
+                {role: "user", content: ((if $prev == "" then "" else "Findings from your previous AI review of this PR (already reported; do NOT report these again unless the underlying code changed and the issue persists):\n\n" + $prev + "\n\n" else "" end) + "PR context (title, description, repo guidance, changed file contents):\n\n" + $context + "\n\nReview this diff:\n\n" + $diff)}
               ]
             }')
 
@@ -116,6 +126,43 @@ jobs:
 
           python3 - <<'PYEOF'
           import json, re, os, sys, urllib.request, urllib.error
+
+          def api(method, url, data=None):
+              req = urllib.request.Request(
+                  f"https://api.github.com{url}",
+                  data=json.dumps(data).encode() if data is not None else None,
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "Content-Type": "application/json",
+                  },
+                  method=method,
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      body = resp.read()
+                      return json.loads(body) if body else None
+              except urllib.error.HTTPError as e:
+                  sys.stderr.write(f"GitHub {method} {url} failed: {e.code} {e.reason}: {e.read().decode(errors='replace')[:500]}\n")
+                  if e.code == 404:
+                      return None
+                  raise
+
+          def cleanup_old_reviews():
+              reviews = api("GET", f"/repos/{os.environ['GH_REPO']}/pulls/{os.environ['PR_NUMBER']}/reviews?per_page=100") or []
+              for rev in reviews:
+                  if rev["user"]["login"] != "github-actions[bot]":
+                      continue
+                  if not (rev.get("body") or "").startswith("## AI Review"):
+                      continue
+                  api("PUT", f"/repos/{os.environ['GH_REPO']}/pulls/{os.environ['PR_NUMBER']}/reviews/{rev['id']}/dismissals",
+                      {"message": "Superseded by a newer AI review."})
+              comments = api("GET", f"/repos/{os.environ['GH_REPO']}/pulls/{os.environ['PR_NUMBER']}/comments?per_page=100") or []
+              for cmt in comments:
+                  if cmt["user"]["login"] == "github-actions[bot]":
+                      api("DELETE", f"/repos/{os.environ['GH_REPO']}/pulls/comments/{cmt['id']}")
+
+          cleanup_old_reviews()
 
           repo = os.environ["GH_REPO"]
           pr = os.environ["PR_NUMBER"]
@@ -174,28 +221,12 @@ jobs:
                       summary.append(f"- **{loc}** — {cmt}")
               open("/tmp/summary.md", "w").write("\n".join(summary))
 
-              payload = json.dumps({
+              api("POST", f"/repos/{repo}/pulls/{pr}/reviews", {
                   "commit_id": head_sha,
                   "event": "COMMENT",
                   "body": "\n".join(summary),
                   "comments": inline,
-              }).encode()
-              req = urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}/pulls/{pr}/reviews",
-                  data=payload,
-                  headers={
-                      "Authorization": f"Bearer {token}",
-                      "Accept": "application/vnd.github+json",
-                      "Content-Type": "application/json",
-                  },
-                  method="POST",
-              )
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as resp:
-                      resp.read()
-              except urllib.error.HTTPError as e:
-                  sys.stderr.write(f"GitHub review POST failed: {e.code} {e.reason}: {e.read().decode(errors='replace')[:500]}\n")
-                  raise
+              })
 
           if summary_only:
               raise SystemExit(0)
