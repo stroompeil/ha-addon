@@ -16,7 +16,7 @@ on:
         options:
           - mistral-small-2603
           - mistral-large-latest
-          - glm-5.3
+          - zai-glm-5-3
       temperature:
         description: "Sampling temperature (0 = deterministic)"
         required: false
@@ -46,7 +46,6 @@ jobs:
       - name: Run Mistral review
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REVIEWER: ${{ github.event.pull_request.number && 'mistral-small-2603' || inputs.reviewer }}
@@ -61,22 +60,8 @@ jobs:
             exit 0
           fi
 
-          case "$REVIEWER" in
-            glm-5.3)
-              ENDPOINT="https://openrouter.ai/api/v1/chat/completions"
-              AUTH="Authorization: Bearer $OPENROUTER_API_KEY"
-              MODEL="z-ai/glm-5.3"
-              ;;
-            mistral-*)
-              ENDPOINT="https://api.mistral.ai/v1/chat/completions"
-              AUTH="Authorization: Bearer $MISTRAL_API_KEY"
-              MODEL="$REVIEWER"
-              ;;
-            *)
-              echo "Unknown reviewer: $REVIEWER" >&2
-              exit 1
-              ;;
-          esac
+          ENDPOINT="https://api.mistral.ai/v1/chat/completions"
+          MODEL="$REVIEWER"
 
           BODY=$(jq -n \
             --arg model "$MODEL" \
