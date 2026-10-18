@@ -70,17 +70,37 @@ jobs:
             exit 1
           fi
 
+          # Context package: PR title/description, repo guidance, changed file contents
+          gh pr view "$PR_NUMBER" --json title,body --jq '"# " + .title + "\n\n" + (.body // "")' \
+            > /tmp/pr-context.md || true
+          for f in AGENTS.md CONTRIBUTING.md README.md docs/AGENTS.md; do
+            if [ -f "$f" ]; then
+              echo -e "\n--- Repo guidance: $f ---" >> /tmp/pr-context.md
+              head -c 20000 "$f" >> /tmp/pr-context.md
+            fi
+          done
+          grep -x -E '^\+\+\+ b/.*' /tmp/pr.diff | cut -c7- | sort -u > /tmp/changed-files.txt
+          while IFS= read -r f; do
+            if [ -f "$f" ] && [ "$(head -c 300000 "$f" | wc -c)" -gt 0 ]; then
+              echo -e "\n--- Full content of $f (new version) ---" >> /tmp/pr-context.md
+              head -c 30000 "$f" >> /tmp/pr-context.md
+              echo -e "\n--- end of $f ---" >> /tmp/pr-context.md
+            fi
+          done < /tmp/changed-files.txt
+          head -c 150000 /tmp/pr-context.md > /tmp/pr-trimmed-context.md
+
           BODY=$(jq -n \
             --arg model "$REVIEWER" \
             --argjson temp "$TEMPERATURE" \
             --arg diff "$(cat /tmp/pr-trimmed.diff)" \
+            --arg context "$(cat /tmp/pr-trimmed-context.md)" \
             '{
               model: $model,
               temperature: $temp,
               response_format: {type: "json_object"},
               messages: [
-                {role: "system", content: "You are an expert code reviewer. Review the pull request diff provided by the user. Report only real issues: bugs, security problems, performance problems, and clear style violations. Be concise. Respond with a JSON object exactly of the form {\"findings\": [{\"file\": \"<path as shown in the diff>\", \"line\": <line number in the NEW version of the file>, \"comment\": \"<short explanation>\"}]}. The line number must refer to a line that is added or unchanged in the new version (a + or context line in the diff). Do not reference deleted lines. If there are no significant issues, respond with {\"findings\": []}."},
-                {role: "user", content: ("Review this diff:\n\n" + $diff)}
+                {role: "system", content: "You are an expert code reviewer. Review the pull request whose diff and context are provided by the user. Use the PR description, repo guidance, and the full contents of the changed files to understand intent and surrounding code; judge issues in that context rather than from the diff hunks alone. Report only real issues: bugs, security problems, performance problems, and clear style violations (follow the repo guidance where given). Be concise. Respond with a JSON object exactly of the form {\"findings\": [{\"file\": \"<path as shown in the diff>\", \"line\": <line number in the NEW version of the file>, \"comment\": \"<short explanation>\"}]}. The line number must refer to a line that is added or unchanged in the new version (a + or context line in the diff). Do not reference deleted lines. If there are no significant issues, respond with {\"findings\": []}."},
+                {role: "user", content: ("PR context (title, description, repo guidance, changed file contents):\n\n" + $context + "\n\nReview this diff:\n\n" + $diff)}
               ]
             }')
 
