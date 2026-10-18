@@ -78,7 +78,7 @@ jobs:
             }')
 
           curl -sS --max-time 600 "$ENDPOINT" \
-            -H "$AUTH" \
+            -H "Authorization: Bearer $MISTRAL_API_KEY" \
             -H "Content-Type: application/json" \
             -d "$BODY" > /tmp/response.json
 
