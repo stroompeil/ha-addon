@@ -65,6 +65,11 @@ jobs:
             exit 0
           fi
 
+          if [ ! -s /tmp/pr.diff ]; then
+            echo "Failed to fetch PR diff." >&2
+            exit 1
+          fi
+
           BODY=$(jq -n \
             --arg model "$REVIEWER" \
             --argjson temp "$TEMPERATURE" \
@@ -90,7 +95,7 @@ jobs:
           export HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
 
           python3 - <<'PYEOF'
-          import json, re, os, urllib.request
+          import json, re, os, sys, urllib.request, urllib.error
 
           repo = os.environ["GH_REPO"]
           pr = os.environ["PR_NUMBER"]
@@ -165,8 +170,12 @@ jobs:
                   },
                   method="POST",
               )
-              with urllib.request.urlopen(req) as resp:
-                  resp.read()
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      resp.read()
+              except urllib.error.HTTPError as e:
+                  sys.stderr.write(f"GitHub review POST failed: {e.code} {e.reason}: {e.read().decode(errors='replace')[:500]}\n")
+                  raise
 
           if summary_only:
               raise SystemExit(0)
