@@ -234,7 +234,7 @@ jobs:
 
               api("POST", f"/repos/{repo}/pulls/{pr}/reviews", {
                   "commit_id": head_sha,
-                  "event": "COMMENT",
+                  "event": "REQUEST_CHANGES" if (inline or unanchored) else "COMMENT",
                   "body": "\n".join(summary),
                   "comments": inline,
               })
