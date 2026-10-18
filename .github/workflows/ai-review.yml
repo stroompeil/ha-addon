@@ -162,8 +162,12 @@ jobs:
                       continue
                   if not (rev.get("body") or "").startswith("## AI Review"):
                       continue
-                  api("PUT", f"/repos/{os.environ['GH_REPO']}/pulls/{os.environ['PR_NUMBER']}/reviews/{rev['id']}/dismissals",
-                      {"message": "Superseded by a newer AI review."})
+                  if rev.get("state") in ("APPROVED", "CHANGES_REQUESTED"):
+                      api("PUT", f"/repos/{os.environ['GH_REPO']}/pulls/{os.environ['PR_NUMBER']}/reviews/{rev['id']}/dismissals",
+                          {"message": "Superseded by a newer AI review."})
+                  else:
+                      api("PUT", f"/repos/{os.environ['GH_REPO']}/pulls/{os.environ['PR_NUMBER']}/reviews/{rev['id']}",
+                          {"body": "## AI Review (superseded)\n\nSuperseded by a newer AI review."})
               comments = api("GET", f"/repos/{os.environ['GH_REPO']}/pulls/{os.environ['PR_NUMBER']}/comments?per_page=100") or []
               for cmt in comments:
                   if cmt["user"]["login"] == "github-actions[bot]":
