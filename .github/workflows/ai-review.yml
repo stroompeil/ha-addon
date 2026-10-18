@@ -196,7 +196,7 @@ jobs:
                   line = raw.rstrip("\n")
                   if line.startswith("+++ b/"):
                       path, new_line = line[6:], None
-                  elif line.startswith("@@") and line in raw:
+                  elif line.startswith("@@"):
                       m = re.search(r"\+(\d+)(?:,\d+)? @@", line)
                       new_line = int(m.group(1)) if m else None
                   elif path is not None and new_line is not None:
