@@ -98,19 +98,26 @@ jobs:
             >> /tmp/prev-findings.txt || true
           head -c 50000 /tmp/prev-findings.txt > /tmp/prev-trimmed.txt || true
 
+          PREV=$(cat /tmp/prev-trimmed.txt 2>/dev/null || true)
+          if [ -s /tmp/prev-trimmed.txt ]; then
+            PREV_BLOCK="Findings from your previous AI review of this PR (already reported; do NOT report these again unless the underlying code changed and the issue persists):\n\n$PREV\n\n"
+          else
+            PREV_BLOCK=""
+          fi
+
           BODY=$(jq -n \
             --arg model "$REVIEWER" \
             --argjson temp "$TEMPERATURE" \
             --arg diff "$(cat /tmp/pr-trimmed.diff)" \
             --arg context "$(cat /tmp/pr-trimmed-context.md)" \
-            --arg prev "$(cat /tmp/prev-trimmed.txt 2>/dev/null || true)" \
+            --arg prevblock "$PREV_BLOCK" \
             '{
               model: $model,
               temperature: $temp,
               response_format: {type: "json_object"},
               messages: [
                 {role: "system", content: "You are an expert code reviewer. Review the pull request whose diff and context are provided by the user. Use the PR description, repo guidance, and the full contents of the changed files to understand intent and surrounding code; judge issues in that context rather than from the diff hunks alone. Report only real issues: bugs, security problems, performance problems, and clear style violations (follow the repo guidance where given). Be concise. Respond with a JSON object exactly of the form {\"findings\": [{\"file\": \"<path as shown in the diff>\", \"line\": <line number in the NEW version of the file>, \"comment\": \"<short explanation>\"}]}. The line number must refer to a line that is added or unchanged in the new version (a + or context line in the diff). Do not reference deleted lines. If there are no significant issues, respond with {\"findings\": []}."},
-                {role: "user", content: ((if $prev == "" then "" else "Findings from your previous AI review of this PR (already reported; do NOT report these again unless the underlying code changed and the issue persists):\n\n" + $prev + "\n\n" else "" end) + "PR context (title, description, repo guidance, changed file contents):\n\n" + $context + "\n\nReview this diff:\n\n" + $diff)}
+                {role: "user", content: ($prevblock + "PR context (title, description, repo guidance, changed file contents):\n\n" + $context + "\n\nReview this diff:\n\n" + $diff)}
               ]
             }')
 
