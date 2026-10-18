@@ -48,51 +48,126 @@ jobs:
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REVIEWER: ${{ github.event.pull_request.number && 'mistral-small-2603' || inputs.reviewer }}
           TEMPERATURE: ${{ inputs.temperature || '0' }}
           MAX_DIFF: ${{ inputs.max_diff_bytes || '100000' }}
         run: |
           set -euo pipefail
-          gh pr diff "$PR_NUMBER" > /tmp/pr.diff
+          gh pr diff "$PR_NUMBER" --allow-escape-sequences 2>/dev/null \
+            | sed 's/\x1B\[[0-9;?]*[a-zA-Z]//g; s/\x1B][0-9];[^\x07]*\x07//g' > /tmp/pr.diff \
+            || gh pr diff "$PR_NUMBER" \
+            | sed 's/\x1B\[[0-9;?]*[a-zA-Z]//g; s/\x1B][0-9];[^\x07]*\x07//g' > /tmp/pr.diff
           head -c "$MAX_DIFF" /tmp/pr.diff > /tmp/pr-trimmed.diff
           if [ ! -s /tmp/pr-trimmed.diff ]; then
             echo "Empty diff, skipping review."
             exit 0
           fi
 
-          ENDPOINT="https://api.mistral.ai/v1/chat/completions"
-          MODEL="$REVIEWER"
-
           BODY=$(jq -n \
-            --arg model "$MODEL" \
+            --arg model "$REVIEWER" \
             --argjson temp "$TEMPERATURE" \
             --arg diff "$(cat /tmp/pr-trimmed.diff)" \
             '{
               model: $model,
               temperature: $temp,
+              response_format: {type: "json_object"},
               messages: [
-                {role: "system", content: "You are an expert code reviewer. Review the following pull request diff. Report only real issues: bugs, security problems, performance problems, and clear style violations. For each issue give the file and a short explanation. Be concise. If nothing significant, reply exactly: No significant issues."},
+                {role: "system", content: "You are an expert code reviewer. Review the pull request diff provided by the user. Report only real issues: bugs, security problems, performance problems, and clear style violations. Be concise. Respond with a JSON object exactly of the form {\"findings\": [{\"file\": \"<path as shown in the diff>\", \"line\": <line number in the NEW version of the file>, \"comment\": \"<short explanation>\"}]}. The line number must refer to a line that is added or unchanged in the new version (a + or context line in the diff). Do not reference deleted lines. If there are no significant issues, respond with {\"findings\": []}."},
                 {role: "user", content: ("Review this diff:\n\n" + $diff)}
               ]
             }')
 
-          curl -sS --max-time 600 "$ENDPOINT" \
+          curl -sS --max-time 600 "https://api.mistral.ai/v1/chat/completions" \
             -H "Authorization: Bearer $MISTRAL_API_KEY" \
             -H "Content-Type: application/json" \
             -d "$BODY" > /tmp/response.json
 
-          REVIEW=$(jq -r '.choices[0].message.content // empty' /tmp/response.json)
-          if [ -z "$REVIEW" ]; then
-            echo "Model API returned no content:" >&2
-            jq . /tmp/response.json >&2 || cat /tmp/response.json >&2
-            exit 1
-          fi
+          jq -e '.choices[0].message.content' /tmp/response.json > /dev/null \
+            || { echo "Model API returned no content:" >&2; cat /tmp/response.json >&2; exit 1; }
 
-          {
-            echo "## AI Review (\`$REVIEWER\`)"
-            echo
-            echo "$REVIEW"
-          } > /tmp/review.md
+          export HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
 
-          gh pr review "$PR_NUMBER" --comment --body-file /tmp/review.md
+          python3 - <<'PYEOF'
+          import json, re, os, urllib.request
+
+          repo = os.environ["GH_REPO"]
+          pr = os.environ["PR_NUMBER"]
+          reviewer = os.environ["REVIEWER"]
+          head_sha = os.environ["HEAD_SHA"]
+          token = os.environ["GH_TOKEN"]
+
+          content = json.load(open("/tmp/response.json"))["choices"][0]["message"]["content"]
+          content = re.sub(r"^```(json)?|```$", "", content.strip(), flags=re.MULTILINE).strip()
+          try:
+              findings = json.loads(content).get("findings", [])
+          except json.JSONDecodeError:
+              open("/tmp/summary.md", "w").write(f"## AI Review (`{reviewer}`)\n\n{content}\n")
+              summary_only = True
+          else:
+              summary_only = False
+              valid = {}
+              path, new_line = None, None
+              for raw in open("/tmp/pr.diff", errors="replace"):
+                  line = raw.rstrip("\n")
+                  if line.startswith("+++ b/"):
+                      path, new_line = line[6:], None
+                  elif line.startswith("@@") and line in raw:
+                      m = re.search(r"\+(\d+)(?:,\d+)? @@", line)
+                      new_line = int(m.group(1)) if m else None
+                  elif path is not None and new_line is not None:
+                      if line.startswith("+"):
+                          valid.setdefault(path, set()).add(new_line)
+                          new_line += 1
+                      elif line.startswith(" "):
+                          valid.setdefault(path, set()).add(new_line)
+                          new_line += 1
+
+              inline, unanchored = [], []
+              for f in findings:
+                  file_ = str(f.get("file", "")).strip()
+                  try:
+                      ln = int(f.get("line"))
+                  except (TypeError, ValueError):
+                      ln = None
+                  cmt = str(f.get("comment", "")).strip()
+                  if not cmt:
+                      continue
+                  if file_ in valid and ln in valid[file_]:
+                      inline.append({"path": file_, "line": ln, "side": "RIGHT", "body": cmt})
+                  else:
+                      unanchored.append((file_, ln, cmt))
+
+              summary = [f"## AI Review (`{reviewer}`)", ""]
+              if not inline and not unanchored:
+                  summary.append("No significant issues.")
+              else:
+                  summary.append(f"{len(inline)} inline comment(s), {len(unanchored)} unanchored finding(s).")
+                  for file_, ln, cmt in unanchored:
+                      loc = f"{file_}:{ln}" if ln else (file_ or "unknown")
+                      summary.append(f"- **{loc}** — {cmt}")
+              open("/tmp/summary.md", "w").write("\n".join(summary))
+
+              payload = json.dumps({
+                  "commit_id": head_sha,
+                  "event": "COMMENT",
+                  "body": "\n".join(summary),
+                  "comments": inline,
+              }).encode()
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/pulls/{pr}/reviews",
+                  data=payload,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(req) as resp:
+                  resp.read()
+
+          if summary_only:
+              raise SystemExit(0)
+          PYEOF
