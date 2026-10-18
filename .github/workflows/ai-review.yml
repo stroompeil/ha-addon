@@ -95,4 +95,4 @@ jobs:
             echo "$REVIEW"
           } > /tmp/review.md
 
-          gh pr review "$PR_NUMBER" --body-file /tmp/review.md
+          gh pr review "$PR_NUMBER" --comment --body-file /tmp/review.md
