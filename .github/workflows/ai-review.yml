@@ -1,0 +1,112 @@
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+      reviewer:
+        description: "Reviewer model"
+        required: true
+        default: "mistral-small-2603"
+        type: choice
+        options:
+          - mistral-small-2603
+          - mistral-large-latest
+          - glm-5.3
+      temperature:
+        description: "Sampling temperature (0 = deterministic)"
+        required: false
+        default: "0"
+      max_diff_bytes:
+        description: "Max diff size in bytes sent to the model"
+        required: false
+        default: "100000"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run Mistral review
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          REVIEWER: ${{ github.event.pull_request.number && 'mistral-small-2603' || inputs.reviewer }}
+          TEMPERATURE: ${{ inputs.temperature || '0' }}
+          MAX_DIFF: ${{ inputs.max_diff_bytes || '100000' }}
+        run: |
+          set -euo pipefail
+          gh pr diff "$PR_NUMBER" > /tmp/pr.diff
+          head -c "$MAX_DIFF" /tmp/pr.diff > /tmp/pr-trimmed.diff
+          if [ ! -s /tmp/pr-trimmed.diff ]; then
+            echo "Empty diff, skipping review."
+            exit 0
+          fi
+
+          case "$REVIEWER" in
+            glm-5.3)
+              ENDPOINT="https://openrouter.ai/api/v1/chat/completions"
+              AUTH="Authorization: Bearer $OPENROUTER_API_KEY"
+              MODEL="z-ai/glm-5.3"
+              ;;
+            mistral-*)
+              ENDPOINT="https://api.mistral.ai/v1/chat/completions"
+              AUTH="Authorization: Bearer $MISTRAL_API_KEY"
+              MODEL="$REVIEWER"
+              ;;
+            *)
+              echo "Unknown reviewer: $REVIEWER" >&2
+              exit 1
+              ;;
+          esac
+
+          BODY=$(jq -n \
+            --arg model "$MODEL" \
+            --argjson temp "$TEMPERATURE" \
+            --arg diff "$(cat /tmp/pr-trimmed.diff)" \
+            '{
+              model: $model,
+              temperature: $temp,
+              messages: [
+                {role: "system", content: "You are an expert code reviewer. Review the following pull request diff. Report only real issues: bugs, security problems, performance problems, and clear style violations. For each issue give the file and a short explanation. Be concise. If nothing significant, reply exactly: No significant issues."},
+                {role: "user", content: ("Review this diff:\n\n" + $diff)}
+              ]
+            }')
+
+          curl -sS --max-time 600 "$ENDPOINT" \
+            -H "$AUTH" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" > /tmp/response.json
+
+          REVIEW=$(jq -r '.choices[0].message.content // empty' /tmp/response.json)
+          if [ -z "$REVIEW" ]; then
+            echo "Model API returned no content:" >&2
+            jq . /tmp/response.json >&2 || cat /tmp/response.json >&2
+            exit 1
+          fi
+
+          {
+            echo "## AI Review (\`$REVIEWER\`)"
+            echo
+            echo "$REVIEW"
+          } > /tmp/review.md
+
+          gh pr review "$PR_NUMBER" --body-file /tmp/review.md
