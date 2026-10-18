@@ -15,7 +15,7 @@ on:
         type: choice
         options:
           - mistral-small-2603
-          - mistral-large-latest
+          - mistral-large-2512
           - zai-glm-5-3
       temperature:
         description: "Sampling temperature (0 = deterministic)"
@@ -116,7 +116,7 @@ jobs:
               temperature: $temp,
               response_format: {type: "json_object"},
               messages: [
-                {role: "system", content: "You are an expert code reviewer. Review the pull request whose diff and context are provided by the user. Use the PR description, repo guidance, and the full contents of the changed files to understand intent and surrounding code; judge issues in that context rather than from the diff hunks alone. Report only real issues: bugs, security problems, performance problems, and clear style violations (follow the repo guidance where given). Be concise. Respond with a JSON object exactly of the form {\"findings\": [{\"file\": \"<path as shown in the diff>\", \"line\": <line number in the NEW version of the file>, \"comment\": \"<short explanation>\"}]}. The line number must refer to a line that is added or unchanged in the new version (a + or context line in the diff). Do not reference deleted lines. If there are no significant issues, respond with {\"findings\": []}."},
+                {role: "system", content: "You are an expert code reviewer. Review the pull request whose diff and context are provided by the user. Use the PR description, repo guidance, and the full contents of the changed files to understand intent and surrounding code; judge issues in that context rather than from the diff hunks alone. Report only real issues: bugs, security problems, performance problems, and clear style violations (follow the repo guidance where given). Rank findings by confidence and severity, and report AT MOST 4 findings — only the most significant ones worth a human's attention. Do not report minor, speculative, or stylistic nitpicks. Be concise. Respond with a JSON object exactly of the form {\"findings\": [{\"file\": \"<path as shown in the diff>\", \"line\": <line number in the NEW version of the file>, \"comment\": \"<short explanation>\"}]}. The line number must refer to a line that is added or unchanged in the new version (a + or context line in the diff). Do not reference deleted lines. If there are no significant issues, respond with {\"findings\": []}."},
                 {role: "user", content: ($prevblock + "PR context (title, description, repo guidance, changed file contents):\n\n" + $context + "\n\nReview this diff:\n\n" + $diff)}
               ]
             }')
@@ -128,6 +128,37 @@ jobs:
 
           jq -e '.choices[0].message.content' /tmp/response.json > /dev/null \
             || { echo "Model API returned no content:" >&2; cat /tmp/response.json >&2; exit 1; }
+
+          # Second pass: verify findings with Mistral Large 3 to drop false positives
+          jq -r '.choices[0].message.content' /tmp/response.json \
+            | sed 's/^```\(json\)\?//; s/```$//' > /tmp/findings.json
+          FINDINGS_COUNT=$(jq '.findings | length' /tmp/findings.json 2>/dev/null || echo 1)
+          if [ "$FINDINGS_COUNT" -gt 0 ]; then
+            VERIFY_BODY=$(jq -n \
+              --arg findings "$(cat /tmp/findings.json)" \
+              --arg context "$(cat /tmp/pr-trimmed-context.md)" \
+              --arg diff "$(cat /tmp/pr-trimmed.diff)" \
+              '{
+                model: "mistral-large-2512",
+                temperature: 0,
+                response_format: {type: "json_object"},
+                messages: [
+                  {role: "system", content: "You are a strict second-pass verifier for a code review. You receive PR context, the diff, and findings from a first-pass reviewer. For each finding, decide whether it is genuinely correct and significant given the full context: the referenced code exists, the claimed problem is real (not a false positive), it is not already handled elsewhere in the file, and it is worth a human's attention. Return a JSON object exactly of the form {\"findings\": [...]} containing ONLY the verified findings (same file/line/comment fields, at most 4). If none survive, return {\"findings\": []}."},
+                  {role: "user", content: ("PR context:\n\n" + $context + "\n\nDiff:\n\n" + $diff + "\n\nFirst-pass findings to verify:\n\n" + $findings)}
+                ]
+              }')
+            curl -sS --max-time 600 "https://api.mistral.ai/v1/chat/completions" \
+              -H "Authorization: Bearer $MISTRAL_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "$VERIFY_BODY" > /tmp/verify-response.json
+            jq -r '.choices[0].message.content' /tmp/verify-response.json \
+              | sed 's/^```\(json\)\?//; s/```$//' > /tmp/verified-findings.json \
+              || cp /tmp/findings.json /tmp/verified-findings.json
+            jq -e '.findings' /tmp/verified-findings.json > /dev/null 2>&1 \
+              || cp /tmp/findings.json /tmp/verified-findings.json
+          else
+            cp /tmp/findings.json /tmp/verified-findings.json
+          fi
 
           export HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
 
@@ -181,7 +212,7 @@ jobs:
           head_sha = os.environ["HEAD_SHA"]
           token = os.environ["GH_TOKEN"]
 
-          content = json.load(open("/tmp/response.json"))["choices"][0]["message"]["content"]
+          content = open("/tmp/verified-findings.json").read().strip()
           content = re.sub(r"^```(json)?|```$", "", content.strip(), flags=re.MULTILINE).strip()
           try:
               findings = json.loads(content).get("findings", [])
