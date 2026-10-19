@@ -113,11 +113,134 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
+          fetch-depth: 0
 
       - name: Download zip artifact
         uses: actions/download-artifact@v8
         with:
           name: stroompeil-ha-addon
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: |
+          set -euo pipefail
+          # Collect the commits included in this release: everything on main
+          # since the tag of the most recent existing release.
+          prev="$(gh release list --json tagName -q '.[0].tagName' || true)"
+          if [ -n "$prev" ] && git rev-parse --verify --quiet "$prev^{commit}" >/dev/null; then
+            git log --reverse --no-merges "$prev..HEAD" \
+              --format='---%n%H%n%s%n%b' > /tmp/commits.txt
+          else
+            git log --reverse --no-merges -n 20 HEAD \
+              --format='---%n%H%n%s%n%b' > /tmp/commits.txt
+          fi
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import re
+          import subprocess
+          import urllib.request
+
+          api_key = os.environ.get("MISTRAL_API_KEY", "")
+
+          def load_commits(path):
+              with open(path, encoding="utf-8") as fh:
+                  raw = fh.read()
+              commits = []
+              for block in raw.split("---\n")[1:]:
+                  lines = block.strip("\n").split("\n")
+                  if len(lines) < 2:
+                      continue
+                  sha, subject = lines[0].strip(), lines[1].strip()
+                  body = "\n".join(lines[2:]).strip()
+                  try:
+                      diff = subprocess.run(
+                          ["git", "show", "--format=", "--no-color", sha],
+                          capture_output=True, text=True, timeout=60,
+                      ).stdout
+                  except Exception:
+                      diff = ""
+                  commits.append({
+                      "sha": sha,
+                      "subject": subject,
+                      "body": body,
+                      "diff": diff[:20000],
+                  })
+              return commits
+
+          commits = load_commits("/tmp/commits.txt")
+          if not commits:
+              commits = [{"sha": "", "subject": "Automated build", "body": "", "diff": ""}]
+
+          notes = None
+          if api_key:
+              request = json.dumps({
+                  "model": "mistral-small-2603",
+                  "temperature": 0,
+                  "response_format": {"type": "json_object"},
+                  "messages": [
+                      {
+                          "role": "system",
+                          "content": (
+                              "You write release notes for a Home Assistant integration "
+                              "aimed at end users. For each changed commit listed, write "
+                              "a short one or two line note describing what changed from "
+                              "the user's perspective: new features, fixes, behavior "
+                              "changes. Plain, non-technical language; no commit hashes, "
+                              "no internal jargon, no markdown headers. "
+                              "Respond with a JSON object exactly of the form "
+                              '{\"notes\": [\"<note for commit 1>\", \"<note for commit 2>\", ...]}'
+                              'with exactly one entry per listed commit, in the same order.'
+                          ),
+                      },
+                      {
+                          "role": "user",
+                          "content": "Changed commits in this release:\n\n" + json.dumps(commits, indent=2),
+                      },
+                  ],
+              }).encode()
+              try:
+                  req = urllib.request.Request(
+                      "https://api.mistral.ai/v1/chat/completions",
+                      data=request,
+                      headers={
+                          "Authorization": f"Bearer {api_key}",
+                          "Content-Type": "application/json",
+                      },
+                      method="POST",
+                  )
+                  with urllib.request.urlopen(req, timeout=300) as resp:
+                      content = json.loads(resp.read())["choices"][0]["message"]["content"]
+                  content = re.sub(r"^```(json)?|```$", "", content.strip())
+                  parsed = json.loads(content)
+                  candidate = parsed.get("notes")
+                  if isinstance(candidate, list) and len(candidate) == len(commits):
+                      notes = [str(n).strip() for n in candidate]
+              except Exception as err:
+                  print(f"Release note generation failed ({err}); falling back to commit subjects.")
+
+          if notes is None:
+              notes = [c["subject"] for c in commits]
+
+          lines = []
+          for note in notes:
+              for line in note.splitlines():
+                  line = line.strip().lstrip("-*").strip()
+                  if line:
+                      lines.append(f"- {line}")
+          if not lines:
+              lines = ["- Automated build."]
+
+          with open("/tmp/release-notes.md", "w", encoding="utf-8") as fh:
+              fh.write("\n".join(lines) + "\n")
+          PYEOF
 
       - name: Publish release
         env:
@@ -138,4 +261,4 @@ jobs:
           gh release create "$VERSION" stroompeil-ha-addon.zip \
             --target main \
             --title "Dev build ${build}" \
-            --notes "Auto-generated build from ${GITHUB_SHA::7}."
+            --notes-file /tmp/release-notes.md
