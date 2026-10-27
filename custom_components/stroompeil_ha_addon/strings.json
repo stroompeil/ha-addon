@@ -45,6 +45,10 @@
               "token": "Provisioning code"
             }
           }
+        },
+        "abort": {
+          "entry_gone": "The config entry no longer exists.",
+          "reregister_failed": "Re-registering failed. Check the logs and try again."
         }
       }
     }

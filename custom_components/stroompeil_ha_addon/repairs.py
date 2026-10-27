@@ -1,7 +1,8 @@
 """Repair flows for the Stroompeil HA addon integration."""
 from __future__ import annotations
 
-import voluptuous as vol
+import logging
+
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
@@ -9,6 +10,8 @@ from homeassistant.data_entry_flow import FlowResult
 from .const import CONF_SERVER_URL, CONF_TOKEN
 
 from .config_flow import _token_schema
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class UnregisteredRepairFlow(RepairsFlow):
@@ -19,15 +22,23 @@ class UnregisteredRepairFlow(RepairsFlow):
             entry = self.hass.config_entries.async_get_entry(self.data["entry_id"])
             if entry is None:
                 return self.async_abort(reason="entry_gone")
-            self.hass.config_entries.async_update_entry(
-                entry,
-                data={
-                    **entry.data,
-                    CONF_SERVER_URL: user_input[CONF_SERVER_URL],
-                    CONF_TOKEN: user_input[CONF_TOKEN],
-                },
-            )
-            await self.hass.config_entries.async_reload(entry.entry_id)
+            try:
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data={
+                        **entry.data,
+                        CONF_SERVER_URL: user_input[CONF_SERVER_URL],
+                        CONF_TOKEN: user_input[CONF_TOKEN],
+                    },
+                )
+                await self.hass.config_entries.async_reload(entry.entry_id)
+            except Exception as exc:
+                _LOGGER.warning(
+                    "Stroompeil HA addon: re-registering entry %s failed: %s",
+                    entry.entry_id,
+                    exc,
+                )
+                return self.async_abort(reason="reregister_failed")
             return self.async_create_entry(data={})
         return self.async_show_form(
             step_id="init",

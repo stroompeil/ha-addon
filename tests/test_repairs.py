@@ -113,3 +113,52 @@ async def test_init_with_input_when_entry_gone_aborts():
         {CONF_SERVER_URL: "https://new.example", CONF_TOKEN: "new-token"}
     )
     assert result == {"type": "abort", "reason": "entry_gone"}
+
+
+class FailingConfigEntries(FakeConfigEntries):
+    def __init__(self, entries, fail_on="reload"):
+        super().__init__(entries)
+        self.fail_on = fail_on
+
+    def async_update_entry(self, entry, data=None):
+        if self.fail_on == "update":
+            raise RuntimeError("update boom")
+        super().async_update_entry(entry, data=data)
+
+    async def async_reload(self, entry_id):
+        if self.fail_on == "reload":
+            raise RuntimeError("reload boom")
+        await super().async_reload(entry_id)
+
+
+@pytest.mark.asyncio
+async def test_init_with_input_when_reload_fails_aborts(monkeypatch, caplog):
+    entry = FakeEntry("abc123", {CONF_SERVER_URL: "https://old.example", CONF_TOKEN: "old"})
+
+    class FailingHass(FakeHass):
+        def __init__(self):
+            self.config_entries = FailingConfigEntries({"abc123": entry})
+
+    flow = UnregisteredRepairFlow()
+    flow.hass = FailingHass()
+    flow.issue_id = "unregistered_abc123"
+    flow.data = {"entry_id": "abc123"}
+    result = await flow.async_step_init(
+        {CONF_SERVER_URL: "https://new.example", CONF_TOKEN: "new-token"}
+    )
+    assert result == {"type": "abort", "reason": "reregister_failed"}
+
+
+@pytest.mark.asyncio
+async def test_init_with_input_when_update_fails_aborts():
+    entry = FakeEntry("abc123", {CONF_SERVER_URL: "https://old.example", CONF_TOKEN: "old"})
+    hass = FakeHass({"abc123": entry})
+    hass.config_entries = FailingConfigEntries({"abc123": entry}, fail_on="update")
+    flow = UnregisteredRepairFlow()
+    flow.hass = hass
+    flow.issue_id = "unregistered_abc123"
+    flow.data = {"entry_id": "abc123"}
+    result = await flow.async_step_init(
+        {CONF_SERVER_URL: "https://new.example", CONF_TOKEN: "new-token"}
+    )
+    assert result == {"type": "abort", "reason": "reregister_failed"}
