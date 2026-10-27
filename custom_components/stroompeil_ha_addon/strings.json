@@ -34,7 +34,19 @@
   "issues": {
     "unregistered": {
       "title": "Host removed from Stroompeil",
-      "description": "The Stroompeil server no longer recognizes this host. It may have been deleted from the dashboard. Click Fix to re-register with a new provisioning code."
+      "description": "The Stroompeil server no longer recognizes this host. It may have been deleted from the dashboard. Click Fix to re-register with a new provisioning code.",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Re-register host",
+            "description": "Enter a new provisioning code from the Stroompeil dashboard to re-register this host.",
+            "data": {
+              "server_url": "Server URL",
+              "token": "Provisioning code"
+            }
+          }
+        }
+      }
     }
   }
 }

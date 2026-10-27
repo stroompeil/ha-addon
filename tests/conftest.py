@@ -125,5 +125,30 @@ def _install_ha_stubs() -> None:
     binary_sensor.BinarySensorDeviceClass = BinarySensorDeviceClass  # type: ignore[attr-defined]
     binary_sensor.BinarySensorEntity = BinarySensorEntity  # type: ignore[attr-defined]
 
+    data_entry_flow = _install_module("homeassistant.data_entry_flow")
+
+    class FlowResult(dict):
+        pass
+
+    data_entry_flow.FlowResult = FlowResult  # type: ignore[attr-defined]
+
+    repairs = _install_module("homeassistant.components.repairs")
+
+    class RepairsFlow:
+        hass = None
+        issue_id = None
+        data = None
+
+        def async_show_form(self, *, step_id, data_schema=None, errors=None, **_):
+            return {"type": "form", "step_id": step_id, "data_schema": data_schema, "errors": errors or {}}
+
+        def async_create_entry(self, *, data):
+            return {"type": "create_entry", "data": data}
+
+        def async_abort(self, *, reason):
+            return {"type": "abort", "reason": reason}
+
+    repairs.RepairsFlow = RepairsFlow  # type: ignore[attr-defined]
+
 
 _install_ha_stubs()
