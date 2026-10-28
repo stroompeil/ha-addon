@@ -41,8 +41,9 @@ def _create_unregistered_issue(hass, entry_id: str) -> None:
         is_fixable=True,
         issue_domain=DOMAIN,
         severity=IssueSeverity.WARNING,
+        config_entry_id=entry_id,
         translation_key="unregistered",
-        translation_placeholders={"entry_id": entry_id},
+        data={"entry_id": entry_id},
     )
 
 
