@@ -335,6 +335,10 @@ def find_addon_update_entity(hass, slug: str) -> str:
     if not slug:
         return ""
     wanted = slug.lower()
+    # Store add-ons have a repository-hash prefix in their slug
+    # (`a0d7b954_tailscale`) while Supervisor names the update entity after
+    # the add-on's name ("Tailscale"), so match on the bare slug too.
+    bare = wanted.split("_", 1)[-1]
     try:
         for entity_id in hass.states.async_entity_ids("update"):
             state = hass.states.get(entity_id)
@@ -345,10 +349,10 @@ def find_addon_update_entity(hass, slug: str) -> str:
                 or state.attributes.get("title")
                 or ""
             )
-            if title and title.lower() == wanted:
+            if title and title.lower() in (wanted, bare):
                 return entity_id
         for entity_id in hass.states.async_entity_ids("update"):
-            if wanted in entity_id.lower():
+            if wanted in entity_id.lower() or (bare and bare in entity_id.lower()):
                 return entity_id
     except Exception as exc:  # noqa: BLE001
         _LOGGER.debug("addon update entity lookup failed: %s", exc)

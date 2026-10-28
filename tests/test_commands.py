@@ -723,6 +723,30 @@ async def test_addon_update_finds_entity_by_title(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_addon_update_matches_store_prefixed_slug(monkeypatch):
+    """Community-store slugs (a0d7b954_tailscale) whose update entity is
+    named after the bare add-on name must still resolve (ADR 0042)."""
+    _real_sleep = asyncio.sleep
+    monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
+    entity_id = "update.tailscale_update"
+    states = FakeStates({entity_id: FakeState({
+        "installed_version": "1.4.0", "latest_version": "1.5.0",
+        "in_progress": False, "update_percentage": None,
+        "friendly_title": "Tailscale",
+    })})
+    hass = FakeHass(states=states)
+    hass.services = _AddonInstallDoneServices(hass, entity_id, "1.5.0")
+
+    result = await commands.dispatch_command(
+        hass, "a7", COMMAND_TYPE_ADDON_UPDATE, {"slug": "a0d7b954_tailscale"}
+    )
+    assert result["status"] == "ok"
+    assert result["detail"] == "a0d7b954_tailscale updated to 1.5.0"
+    called = [c[2]["entity_id"] for c in hass.services.calls if c[0] == "update"]
+    assert called == [entity_id]
+
+
+@pytest.mark.asyncio
 async def test_addon_update_pins_requested_version(monkeypatch):
     _real_sleep = asyncio.sleep
     monkeypatch.setattr(commands.asyncio, "sleep", lambda *_: _real_sleep(0))
